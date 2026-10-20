@@ -87,3 +87,56 @@ func TestTaskSize_DoesNotCountDirectoryJunction(t *testing.T) {
 		t.Errorf("artifacts = %d, want 0", artifacts)
 	}
 }
+
+// The managed reclaim addresses the two Codex plugin caches by path, so every
+// component of each path must refuse a junction, not just the leaf. The target
+// holds content that passes the cache checks, so only the path check can be
+// what keeps it.
+func TestManagedArtifact_CodexPluginCachesDoNotFollowJunctions(t *testing.T) {
+	d := newGCTestDaemon(t, http.NewServeMux())
+
+	for _, linkRel := range []string{"codex-home", "codex-home/.tmp", marketplacesRel, "codex-home/cache", remoteCatalogRel} {
+		t.Run(linkRel, func(t *testing.T) {
+			taskDir, outside := t.TempDir(), t.TempDir()
+			planted := plantRegenerableCodexCaches(t, outside)
+			createJunction(t, outside, filepath.Join(taskDir, filepath.FromSlash(linkRel)))
+
+			direct, _, _ := d.cleanManagedTaskArtifacts(context.Background(), taskDir)
+			walked, _, _ := d.cleanTaskArtifacts(context.Background(), taskDir, nil)
+			if direct != 0 || walked != 0 {
+				t.Fatalf("removed direct=%d walked=%d through a junction, want 0", direct, walked)
+			}
+			for _, path := range planted {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("junction target was touched: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// A junction inside a marketplace clone is nothing a fresh clone brings back,
+// so the clone stays and the junction target is untouched.
+func TestManagedArtifact_KeepsCodexMarketplaceWithJunctionInside(t *testing.T) {
+	d := newGCTestDaemon(t, http.NewServeMux())
+	taskDir := t.TempDir()
+	clone := installCodexMarketplace(t, taskDir, "alpha", codexMarketplaceUpstream(t))
+	outside := t.TempDir()
+	keep := filepath.Join(outside, "keep")
+	if err := os.WriteFile(keep, []byte("user content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	createJunction(t, outside, filepath.Join(clone, "plugins", "linked"))
+
+	if reason := codexMarketplacesKeepReason(context.Background(), filepath.Join(taskDir, filepath.FromSlash(marketplacesRel))); reason == "" {
+		t.Fatal("a clone holding a junction was accepted as regenerable")
+	}
+	if removed, _, _ := d.cleanManagedTaskArtifacts(context.Background(), taskDir); removed != 0 {
+		t.Fatalf("removed %d managed artifacts, want the marketplace clone kept", removed)
+	}
+	for _, path := range []string{keep, filepath.Join(clone, "plugins", "alpha", "SKILL.md")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("kept content was touched: %v", err)
+		}
+	}
+}

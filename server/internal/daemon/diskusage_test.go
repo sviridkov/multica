@@ -321,8 +321,8 @@ func TestScanDiskUsage_ManagedCodexSandboxIsExactAndDeduplicated(t *testing.T) {
 	if got := report.Tasks[0].ArtifactSizeBytes; got != 300 {
 		t.Fatalf("artifact_size_bytes=%d, want exact managed 300", got)
 	}
-	if got := strings.Join(report.ManagedArtifactSubpaths, ","); got != "codex-home/.sandbox-bin" {
-		t.Fatalf("managed artifact paths=%q, want codex-home/.sandbox-bin", got)
+	if got := strings.Join(report.ManagedArtifactSubpaths, ","); got != "codex-home/.sandbox-bin,codex-home/.tmp/marketplaces,codex-home/cache/remote_plugin_catalog" {
+		t.Fatalf("managed artifact paths=%q, want the sandbox copy and both Codex plugin caches", got)
 	}
 
 	report, err = ScanDiskUsage(root, []string{".sandbox-bin"})
@@ -547,8 +547,8 @@ func TestScanDiskUsageRoots_SumsAcrossRoots(t *testing.T) {
 	if agg.TotalWorkspaceCount != 2 {
 		t.Fatalf("TotalWorkspaceCount = %d, want 2", agg.TotalWorkspaceCount)
 	}
-	if got := strings.Join(agg.ManagedArtifactSubpaths, ","); got != "codex-home/.sandbox-bin" {
-		t.Fatalf("managed artifact paths=%q, want codex-home/.sandbox-bin", got)
+	if got := strings.Join(agg.ManagedArtifactSubpaths, ","); got != "codex-home/.sandbox-bin,codex-home/.tmp/marketplaces,codex-home/cache/remote_plugin_catalog" {
+		t.Fatalf("managed artifact paths=%q, want the sandbox copy and both Codex plugin caches", got)
 	}
 }
 

@@ -366,7 +366,7 @@ func (d *Daemon) applyGCAction(ctx context.Context, taskDir string, action gcAct
 		recordArtifactCleanup(stats, removed, bytes, perPattern)
 		stats.skipped++ // task dir itself preserved
 	case gcActionCleanManagedArtifacts:
-		removed, bytes, perPattern := d.cleanManagedTaskArtifacts(taskDir)
+		removed, bytes, perPattern := d.cleanManagedTaskArtifacts(ctx, taskDir)
 		recordArtifactCleanup(stats, removed, bytes, perPattern)
 		stats.skipped++ // task dir itself preserved
 	default:
@@ -945,8 +945,8 @@ const linkedDirModes = os.ModeSymlink | os.ModeIrregular
 //     as regenerable; deleting tracked output mutates the agent's checkout.
 //   - a basename-matched directory that is or contains a Git checkout is retained, even
 //     when its containing repository does not track the nested checkout.
-//     Exact daemon-managed cache paths keep their explicit regenerable contract,
-//     consistent with cleanManagedTaskArtifacts.
+//     Exact managed paths skip these Git checks and must instead pass
+//     managedArtifactKeepReason, exactly as in cleanManagedTaskArtifacts.
 //   - linked directories are skipped entirely — neither the link nor its
 //     target is touched, so a malicious or stale link can't redirect the GC
 //     outside the workdir. See linkedDirModes for what counts as a link.
@@ -956,8 +956,9 @@ func (d *Daemon) cleanTaskArtifacts(ctx context.Context, taskDir string, pattern
 	return d.cleanTaskArtifactsMatching(ctx, taskDir, newArtifactMatcher(patterns, execenv.ManagedReclaimableArtifactSubpaths()))
 }
 
-// cleanManagedTaskArtifacts removes the exact daemon-managed artifact subpaths
-// under taskDir.
+// cleanManagedTaskArtifacts removes the exact managed artifact subpaths under
+// taskDir that managedArtifactKeepReason proves regenerable, and logs why it
+// keeps any other.
 //
 // The managed set is a list of exact relative paths, so these are addressed
 // directly rather than searched for. Walking the whole task tree to find a
@@ -966,7 +967,7 @@ func (d *Daemon) cleanTaskArtifacts(ctx context.Context, taskDir string, pattern
 // pays it on every GC cycle for as long as it lives, long after the cache is
 // gone. cleanTaskArtifacts still walks, because its basename patterns can match
 // at any depth; this one has nothing to search for.
-func (d *Daemon) cleanManagedTaskArtifacts(taskDir string) (removed int, bytes int64, perPattern map[string]int) {
+func (d *Daemon) cleanManagedTaskArtifacts(ctx context.Context, taskDir string) (removed int, bytes int64, perPattern map[string]int) {
 	perPattern = map[string]int{}
 	if taskDir == "" {
 		return
@@ -984,7 +985,16 @@ func (d *Daemon) cleanManagedTaskArtifacts(taskDir string) (removed int, bytes i
 		if !ok {
 			continue
 		}
+		if reason := managedArtifactKeepReason(ctx, rel, target); reason != "" {
+			d.logger.Info("gc: managed artifact retained", "path", target, "reason", reason, "retained_bytes", dirSize(target))
+			continue
+		}
 		size := dirSize(target)
+		// Inspecting and measuring give a path component time to be replaced
+		// by a link, so prove the path again right before removing it.
+		if _, ok := managedArtifactTarget(absRoot, rel); !ok {
+			continue
+		}
 		if rmErr := os.RemoveAll(target); rmErr != nil {
 			d.logger.Warn("gc: artifact remove failed", "path", target, "error", rmErr)
 			continue
@@ -1095,7 +1105,13 @@ func (d *Daemon) cleanTaskArtifactsMatching(ctx context.Context, taskDir string,
 		if relErr != nil {
 			return relErr
 		}
-		if _, managed := matcher.exactPaths[rel]; !managed {
+		_, managed := matcher.exactPaths[rel]
+		if managed {
+			if reason := managedArtifactKeepReason(ctx, rel, path); reason != "" {
+				d.logger.Info("gc: managed artifact retained", "path", path, "reason", reason, "retained_bytes", dirSize(path))
+				return filepath.SkipDir
+			}
+		} else {
 			preserve, preserveErr := artifactDirectoryNeedsPreservation(ctx, absRoot, path)
 			if preserveErr != nil {
 				// Fail closed. A malformed or temporarily unreadable checkout is not
@@ -1117,6 +1133,13 @@ func (d *Daemon) cleanTaskArtifactsMatching(ctx context.Context, taskDir string,
 		}
 		if ctx.Err() != nil {
 			return context.Cause(ctx)
+		}
+		if managed {
+			// Same re-proof as cleanManagedTaskArtifacts: the inspection and
+			// the size walk leave time for a component to become a link.
+			if _, ok := managedArtifactTarget(absRoot, rel); !ok {
+				return filepath.SkipDir
+			}
 		}
 		if rmErr := os.RemoveAll(path); rmErr != nil {
 			d.logger.Warn("gc: artifact remove failed", "path", path, "error", rmErr)
