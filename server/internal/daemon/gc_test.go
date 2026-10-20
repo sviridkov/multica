@@ -595,6 +595,10 @@ func TestApplyGCAction_RefusesEveryMutationWithoutOwner(t *testing.T) {
 			if err := os.WriteFile(database, []byte("do not delete"), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			// The Codex plugin caches pass their own checks, so only the
+			// ownership gate can be what keeps them.
+			kept := append(plantRegenerableCodexCaches(t, filepath.Join(taskDir, "codex-home")),
+				database, filepath.Join(artifactDir, "payload"), filepath.Join(managedDir, "payload"))
 
 			stats := &gcStats{byPattern: map[string]int{}}
 			if removed := d.applyGCAction(context.Background(), taskDir, tc.action, stats); removed != 0 {
@@ -604,7 +608,7 @@ func TestApplyGCAction_RefusesEveryMutationWithoutOwner(t *testing.T) {
 				t.Fatalf("unowned mutation was counted: cleaned=%d orphaned=%d artifactDirs=%d bytes=%d",
 					stats.cleaned, stats.orphaned, stats.artifactDirs, stats.bytesReclaimed)
 			}
-			for _, path := range []string{database, filepath.Join(artifactDir, "payload"), filepath.Join(managedDir, "payload")} {
+			for _, path := range kept {
 				if _, err := os.Stat(path); err != nil {
 					t.Fatalf("unowned content was mutated: %s: %v", path, err)
 				}
