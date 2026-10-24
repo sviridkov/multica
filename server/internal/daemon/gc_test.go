@@ -597,7 +597,7 @@ func TestApplyGCAction_RefusesEveryMutationWithoutOwner(t *testing.T) {
 			}
 			// The Codex plugin caches pass their own checks, so only the
 			// ownership gate can be what keeps them.
-			kept := append(plantRegenerableCodexCaches(t, filepath.Join(taskDir, "codex-home")),
+			kept := append(plantEmptyCodexCaches(t, taskDir, ""),
 				database, filepath.Join(artifactDir, "payload"), filepath.Join(managedDir, "payload"))
 
 			stats := &gcStats{byPattern: map[string]int{}}

@@ -703,7 +703,7 @@ jobs:
         # silently as "ok".
         run: go test ./internal/daemon/repocache -v -run '^(TestIsolatedCheckoutIsCommittableOnWindows|TestIsolatedCheckoutAcrossVolumesOnWindows)$' -count=1 -timeout=5m
 
-      - name: Test Windows directory-junction link safety
+      - name: Test Windows directory-junction and Codex cache safety
         working-directory: server
         # MUL-6000: the per-task codex-home links the user's real skills into
         # the task directory instead of copying them. On Windows that link is a
@@ -720,7 +720,7 @@ jobs:
         # -v so a skip is visible instead of passing silently as "ok".
         run: |
           go test ./internal/daemon/execenv -v -run '^(TestSeedUserCodexSkills|TestHydrateCodexSkills)' -count=1 -timeout=5m
-          go test ./internal/daemon -v -run '^(TestCleanTaskArtifacts_DoesNotFollowDirectoryJunction|TestTaskSize_DoesNotCountDirectoryJunction|TestManagedArtifact_CodexPluginCachesDoNotFollowJunctions|TestManagedArtifact_KeepsCodexMarketplaceWithJunctionInside)$' -count=1 -timeout=5m
+          go test ./internal/daemon -v -run '^(TestCleanTaskArtifacts_DoesNotFollowDirectoryJunction|TestTaskSize_DoesNotCountDirectoryJunction|TestManagedArtifact_CodexPluginCachesDoNotFollowJunctions|TestManagedArtifact_KeepsCodexMarketplaceWithJunctionInside|TestManagedArtifact_CodexPluginCacheLifecycle|TestManagedArtifact_PreservesUnprovenCodexData|TestManagedArtifact_EmptyCachePopulatedBeforeRemoval|TestManagedArtifact_PluginCacheInspectionFailsClosed)$' -count=1 -timeout=5m
 
       - name: Test Windows task temp dir sweep survives a sharing violation
         working-directory: server

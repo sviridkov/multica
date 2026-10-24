@@ -98,7 +98,7 @@ func TestManagedArtifact_CodexPluginCachesDoNotFollowJunctions(t *testing.T) {
 	for _, linkRel := range []string{"codex-home", "codex-home/.tmp", marketplacesRel, "codex-home/cache", remoteCatalogRel} {
 		t.Run(linkRel, func(t *testing.T) {
 			taskDir, outside := t.TempDir(), t.TempDir()
-			planted := plantRegenerableCodexCaches(t, outside)
+			planted := plantEmptyCodexCaches(t, outside, linkRel)
 			createJunction(t, outside, filepath.Join(taskDir, filepath.FromSlash(linkRel)))
 
 			direct, _, _ := d.cleanManagedTaskArtifacts(context.Background(), taskDir)
@@ -128,7 +128,7 @@ func TestManagedArtifact_KeepsCodexMarketplaceWithJunctionInside(t *testing.T) {
 	}
 	createJunction(t, outside, filepath.Join(clone, "plugins", "linked"))
 
-	if reason := codexMarketplacesKeepReason(context.Background(), filepath.Join(taskDir, filepath.FromSlash(marketplacesRel))); reason == "" {
+	if reason := managedArtifactKeepReason(context.Background(), marketplacesRel, filepath.Join(taskDir, filepath.FromSlash(marketplacesRel))); reason == "" {
 		t.Fatal("a clone holding a junction was accepted as regenerable")
 	}
 	if removed, _, _ := d.cleanManagedTaskArtifacts(context.Background(), taskDir); removed != 0 {

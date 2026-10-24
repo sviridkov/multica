@@ -20,11 +20,11 @@ const (
 	CodexRemotePluginCatalogArtifact = codexHomeDirName + "/cache/remote_plugin_catalog"
 )
 
-// ManagedReclaimableArtifactSubpaths returns regenerable directories inside a
+// ManagedReclaimableArtifactSubpaths returns artifact candidates inside a
 // task env root. Callers must match these as exact relative paths rather than
 // basenames: a repository may legitimately contain a directory with the same
 // leaf name. Only the sandbox copy is reclaimable on sight; the two plugin
-// caches must first be proven to hold nothing Codex would not write again.
+// caches lack independent provenance and can currently be removed only empty.
 func ManagedReclaimableArtifactSubpaths() []string {
 	return []string{
 		filepath.FromSlash(CodexSandboxBinArtifact),

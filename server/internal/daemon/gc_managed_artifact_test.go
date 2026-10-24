@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -412,7 +413,7 @@ func TestManagedArtifact_DirectRemovalMatchesTreeWalk(t *testing.T) {
 	upstream := codexMarketplaceUpstream(t)
 
 	fixtures := map[string]func(t *testing.T, dir string){
-		"clean Codex plugin caches": func(t *testing.T, dir string) {
+		"populated Codex plugin caches without proof": func(t *testing.T, dir string) {
 			installCodexMarketplace(t, dir, "alpha", upstream)
 			writeRemoteCatalog(t, filepath.Join(dir, filepath.FromSlash(remoteCatalogRel)), remoteCatalogFile, remoteCatalogFixture)
 			writeFile(t, filepath.Join(dir, "codex-home/cache/codex_apps_tools/tools.json"), 16)
@@ -519,9 +520,10 @@ func survivingTree(t *testing.T, root string) []string {
 // can add to them, so the managed reclaim takes one only when it can prove
 // Codex writes the same content again.
 const (
-	marketplacesRel   = "codex-home/.tmp/marketplaces"
-	remoteCatalogRel  = "codex-home/cache/remote_plugin_catalog"
-	remoteCatalogFile = "66ddc0fe5e30fa5e.json"
+	codexMarketplaceInstallRecord = ".codex-marketplace-install.json"
+	marketplacesRel               = "codex-home/.tmp/marketplaces"
+	remoteCatalogRel              = "codex-home/cache/remote_plugin_catalog"
+	remoteCatalogFile             = "66ddc0fe5e30fa5e.json"
 )
 
 // remoteCatalogFixture has the shape Codex serializes: a schema version, the
@@ -603,76 +605,97 @@ func writeRemoteCatalog(t *testing.T, dir, name, content string) string {
 	return path
 }
 
-// TestManagedArtifact_ReclaimsCleanCodexPluginCaches: a Codex task completed
-// longer than GCArtifactTTL ago gives back Codex's marketplace clones and its
-// remote plugin catalog cache, both through the direct managed reclaim an
-// active chat takes and through the artifact walk an open issue takes. Codex's
-// other state and caches, and project directories that merely share a name,
-// stay.
-func TestManagedArtifact_ReclaimsCleanCodexPluginCaches(t *testing.T) {
+// Empty roots can be removed through either lifecycle route. Populated caches
+// stay even when their layout matches Codex. Recreating a cache does not prove
+// its provenance; the same rule applies on the next cycle.
+func TestManagedArtifact_CodexPluginCacheLifecycle(t *testing.T) {
 	t.Parallel()
 	upstream := codexMarketplaceUpstream(t)
-	chatID := "dddddddd-0000-0000-0000-000000000001"
-	issueID := "dddddddd-0000-0000-0000-000000000002"
-	mux := chatGCMux(chatID, "active")
-	mux.HandleFunc(fmt.Sprintf("/api/daemon/issues/%s/gc-check", issueID), func(w http.ResponseWriter, r *http.Request) {
+	const id = "dddddddd-0000-0000-0000-000000000001"
+	mux := chatGCMux(id, "active")
+	mux.HandleFunc("/api/daemon/issues/"+id+"/gc-check", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "in_progress", "updated_at": time.Now()})
 	})
 	d := newGCTestDaemon(t, mux)
-
-	for _, tc := range []struct {
-		name   string
-		meta   *execenv.GCMeta
-		action gcAction
-	}{
-		{"active-chat", &execenv.GCMeta{Kind: execenv.GCKindChat, ChatSessionID: chatID, WorkspaceID: "ws"}, gcActionCleanManagedArtifacts},
-		{"open-issue", &execenv.GCMeta{Kind: execenv.GCKindIssue, IssueID: issueID, WorkspaceID: "ws"}, gcActionCleanArtifacts},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.meta.CompletedAt = time.Now().Add(-24 * time.Hour)
-			taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws", tc.name, tc.meta)
-			installCodexMarketplace(t, taskDir, "alpha", upstream)
-			installCodexMarketplace(t, taskDir, "beta", upstream)
-			writeRemoteCatalog(t, filepath.Join(taskDir, filepath.FromSlash(remoteCatalogRel)), remoteCatalogFile, remoteCatalogFixture)
-			kept := []string{
-				"codex-home/config.toml",
-				"codex-home/auth.json",
-				"codex-home/.tmp/plugins/curated/SKILL.md",
-				"codex-home/cache/codex_apps_tools/tools.json",
-				"codex-home/plugins/cache/alpha/plugin.json",
-				"workdir/repo/.tmp/marketplaces/notes.md",
-				"workdir/repo/cache/remote_plugin_catalog/" + remoteCatalogFile,
-				"workdir/repo/codex-home/.tmp/marketplaces/notes.md",
-				"output/result.md",
-				"logs/run.log",
-			}
-			for _, rel := range kept {
-				writeFile(t, filepath.Join(taskDir, filepath.FromSlash(rel)), 16)
-			}
-
-			if got := d.shouldCleanTaskDir(context.Background(), taskDir); got != tc.action {
-				t.Fatalf("action = %d, want %d", got, tc.action)
-			}
-			stats := &gcStats{byPattern: map[string]int{}}
-			d.applyGCAction(context.Background(), taskDir, tc.action, stats)
-
-			assertGone(t, taskDir, marketplacesRel)
-			assertGone(t, taskDir, remoteCatalogRel)
-			assertKept(t, taskDir, append(kept, ".gc_meta.json")...)
-			for _, rel := range []string{marketplacesRel, remoteCatalogRel} {
-				if got := stats.byPattern[managedArtifactPatternPrefix+rel]; got != 1 {
-					t.Fatalf("%s reclaim count = %d, want 1 (stats %+v)", rel, got, stats.byPattern)
+	for _, route := range []string{"direct", "walk"} {
+		for _, populated := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/populated=%t", route, populated), func(t *testing.T) {
+				meta := &execenv.GCMeta{Kind: execenv.GCKindChat, ChatSessionID: id, WorkspaceID: "ws", CompletedAt: time.Now().Add(-24 * time.Hour)}
+				wantAction := gcActionCleanManagedArtifacts
+				if route == "walk" {
+					meta.Kind, meta.IssueID = execenv.GCKindIssue, id
+					wantAction = gcActionCleanArtifacts
 				}
-			}
-		})
+				taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws", fmt.Sprintf("%s-%t", route, populated), meta)
+				kept := []string{
+					"codex-home/config.toml", "codex-home/auth.json",
+					"codex-home/.tmp/plugins/curated/SKILL.md",
+					"codex-home/cache/codex_apps_tools/tools.json",
+					"codex-home/plugins/cache/alpha/plugin.json",
+					"workdir/repo/.tmp/marketplaces/notes.md",
+					"workdir/repo/cache/remote_plugin_catalog/" + remoteCatalogFile,
+					"workdir/repo/codex-home/.tmp/marketplaces/notes.md",
+					"output/result.md", "logs/run.log",
+				}
+				for _, rel := range kept {
+					writeFile(t, filepath.Join(taskDir, filepath.FromSlash(rel)), 16)
+				}
+				for cycle := 1; cycle <= 2; cycle++ {
+					if populated {
+						installCodexMarketplace(t, taskDir, "alpha", upstream)
+						writeRemoteCatalog(t, filepath.Join(taskDir, filepath.FromSlash(remoteCatalogRel)), remoteCatalogFile, remoteCatalogFixture)
+					} else {
+						plantEmptyCodexCaches(t, taskDir, "")
+					}
+					before := codexCacheSnapshot(t, filepath.Join(taskDir, "codex-home"))
+					action := d.shouldCleanTaskDir(context.Background(), taskDir)
+					if action != wantAction {
+						t.Fatalf("action = %d, want %d", action, wantAction)
+					}
+					stats := &gcStats{byPattern: map[string]int{}}
+					d.applyGCAction(context.Background(), taskDir, action, stats)
+					assertKept(t, taskDir, append(kept, ".gc_meta.json")...)
+					if populated {
+						if stats.artifactRemoved != 0 || stats.bytesReclaimed != 0 {
+							t.Fatalf("populated cache removed: %+v", stats)
+						}
+						if after := codexCacheSnapshot(t, filepath.Join(taskDir, "codex-home")); !reflect.DeepEqual(before, after) {
+							t.Fatal("populated cache changed")
+						}
+					} else {
+						if stats.artifactRemoved != 2 || stats.bytesReclaimed != 0 {
+							t.Fatalf("empty-root stats: %+v", stats)
+						}
+						for _, rel := range []string{marketplacesRel, remoteCatalogRel} {
+							assertGone(t, taskDir, rel)
+							if stats.byPattern[managedArtifactPatternPrefix+rel] != 1 {
+								t.Fatalf("missing removal count for %s", rel)
+							}
+						}
+					}
+					// Without recreation, a second cycle makes no changes.
+					stats = &gcStats{byPattern: map[string]int{}}
+					d.applyGCAction(context.Background(), taskDir, action, stats)
+					if stats.artifactRemoved != 0 || stats.bytesReclaimed != 0 {
+						t.Fatalf("repeat cycle changed caches: %+v", stats)
+					}
+					if populated {
+						// Replace disposable fixtures to model a later install.
+						for _, rel := range []string{marketplacesRel, remoteCatalogRel} {
+							if err := os.RemoveAll(filepath.Join(taskDir, filepath.FromSlash(rel))); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+				}
+			})
+		}
 	}
 }
 
-// Codex checks out a configured ref after cloning, and a sparse marketplace
-// is a blob-filtered partial clone. None of these installs holds anything
-// Codex would not write again, even though every clone also fetches a tag on
-// a release commit that no branch reaches, as real marketplaces publish.
-func TestCodexMarketplacesKeepReason_AcceptsCodexInstallShapes(t *testing.T) {
+// Install metadata and a clean checkout are not independent provenance.
+// Sparse checkouts and fetched release tags must survive without index changes.
+func TestManagedArtifact_PreservesCodexInstallShapesWithoutProof(t *testing.T) {
 	t.Parallel()
 	upstream := codexMarketplaceUpstream(t)
 	runGitForGC(t, upstream, "branch", "stable")
@@ -725,16 +748,18 @@ func TestCodexMarketplacesKeepReason_AcceptsCodexInstallShapes(t *testing.T) {
 			t.Parallel()
 			root := filepath.Join(t.TempDir(), "marketplaces")
 			tc.install(t, root)
-			if reason := codexMarketplacesKeepReason(context.Background(), root); reason != "" {
-				t.Fatalf("a clean Codex install was kept: %s", reason)
+			before := codexCacheSnapshot(t, root)
+			if reason := managedArtifactKeepReason(context.Background(), marketplacesRel, root); !strings.Contains(reason, "no independent regenerability proof") {
+				t.Fatalf("unproven install accepted: %q", reason)
+			}
+			if after := codexCacheSnapshot(t, root); !reflect.DeepEqual(before, after) {
+				t.Fatal("inspection changed cache")
 			}
 		})
 	}
 }
 
-// Anything that exists only in this clone, or that a fresh clone would not
-// bring back, keeps the whole marketplace directory, and the reason says what
-// was found.
+// Known local-only content stays under the same conservative provenance rule.
 func TestCodexMarketplacesKeepReason_KeepsLocalOnlyContent(t *testing.T) {
 	t.Parallel()
 	upstream := codexMarketplaceUpstream(t)
@@ -758,14 +783,13 @@ func TestCodexMarketplacesKeepReason_KeepsLocalOnlyContent(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(t *testing.T, root, clone string)
-		reason string
 	}{
 		{"modified tracked file", func(t *testing.T, root, clone string) {
 			writeFile(t, filepath.Join(clone, "plugins", "alpha", "SKILL.md"), 7)
-		}, "alpha: uncommitted changes"},
+		}},
 		{"untracked file", func(t *testing.T, root, clone string) {
 			writeFile(t, filepath.Join(clone, "notes.md"), 8)
-		}, "uncommitted changes"},
+		}},
 		{"ignored file", func(t *testing.T, root, clone string) {
 			exclude, err := os.OpenFile(filepath.Join(clone, ".git", "info", "exclude"), os.O_APPEND|os.O_WRONLY, 0)
 			if err != nil {
@@ -779,39 +803,39 @@ func TestCodexMarketplacesKeepReason_KeepsLocalOnlyContent(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeFile(t, filepath.Join(clone, "debug.log"), 8)
-		}, "uncommitted changes"},
+		}},
 		{"staged change", func(t *testing.T, root, clone string) {
 			writeFile(t, filepath.Join(clone, "plugins", "alpha", "draft.md"), 8)
 			runGitForGC(t, clone, "add", "plugins/alpha/draft.md")
-		}, "uncommitted changes"},
+		}},
 		{"untracked link outside the clone", func(t *testing.T, root, clone string) {
 			if err := os.Symlink(t.TempDir(), filepath.Join(clone, "escape")); err != nil {
 				t.Skipf("symlink not supported: %v", err)
 			}
-		}, "uncommitted changes"},
+		}},
 		{"commit on the installed branch", func(t *testing.T, root, clone string) {
 			commit(t, clone, "local.md")
-		}, "HEAD is not the revision Codex installed"},
+		}},
 		{"commit reset away", func(t *testing.T, root, clone string) {
 			commit(t, clone, "local.md")
 			runGitForGC(t, clone, "reset", "--hard", "--quiet", "HEAD~1")
-		}, "1 commits exist only in this clone"},
+		}},
 		{"tag on an unpushed commit", func(t *testing.T, root, clone string) {
 			runGitForGC(t, clone, "checkout", "--quiet", "--detach")
 			commit(t, clone, "local.md")
 			runGitForGC(t, clone, "tag", "wip")
 			runGitForGC(t, clone, "checkout", "--quiet", "main")
-		}, "commits exist only in this clone"},
+		}},
 		{"stash", func(t *testing.T, root, clone string) {
 			writeFile(t, filepath.Join(clone, "plugins", "alpha", "SKILL.md"), 7)
 			runGitForGC(t, clone, "stash", "push", "--quiet")
-		}, "local ref refs/stash"},
+		}},
 		{"branch without upstream", func(t *testing.T, root, clone string) {
 			runGitForGC(t, clone, "branch", "scratch")
-		}, "local branch refs/heads/scratch has no upstream"},
+		}},
 		{"linked worktree", func(t *testing.T, root, clone string) {
 			runGitForGC(t, clone, "worktree", "add", "--quiet", "--detach", filepath.Join(t.TempDir(), "wt"))
-		}, "other checkouts depend on .git/worktrees"},
+		}},
 		{"initialized submodule", func(t *testing.T, root, clone string) {
 			sub := t.TempDir()
 			writeFile(t, filepath.Join(sub, "README.md"), 8)
@@ -819,10 +843,10 @@ func TestCodexMarketplacesKeepReason_KeepsLocalOnlyContent(t *testing.T) {
 			runGitForGC(t, sub, "add", "README.md")
 			runGitForGC(t, sub, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "sub")
 			runGitForGC(t, clone, "-c", "protocol.file.allow=always", "submodule", "add", "--quiet", sub, "vendor/sub")
-		}, "other checkouts depend on .git/modules"},
+		}},
 		{"unfinished merge", func(t *testing.T, root, clone string) {
 			writeFile(t, filepath.Join(clone, ".git", "MERGE_HEAD"), 41)
-		}, "unfinished Git operation left .git/MERGE_HEAD"},
+		}},
 		{"metadata outside the clone", func(t *testing.T, root, clone string) {
 			moved := filepath.Join(t.TempDir(), "gitdir")
 			if err := os.Rename(filepath.Join(clone, ".git"), moved); err != nil {
@@ -831,78 +855,68 @@ func TestCodexMarketplacesKeepReason_KeepsLocalOnlyContent(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(clone, ".git"), []byte("gitdir: "+moved+"\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-		}, "Git metadata lives outside the clone"},
+		}},
 		{"worktree configured elsewhere", func(t *testing.T, root, clone string) {
 			runGitForGC(t, clone, "config", "core.worktree", t.TempDir())
-		}, "Git does not resolve the clone to its own metadata"},
+		}},
 		{"missing install record", func(t *testing.T, root, clone string) {
 			if err := os.Remove(filepath.Join(clone, codexMarketplaceInstallRecord)); err != nil {
 				t.Fatal(err)
 			}
-		}, "no Codex install record"},
+		}},
 		{"install record with a foreign field", func(t *testing.T, root, clone string) {
 			writeRecord(t, clone, map[string]any{
 				"source_type": "git", "source": upstream, "ref_name": nil, "sparse_paths": []string{},
 				"revision": runGitForGC(t, clone, "rev-parse", "HEAD"), "pinned": true,
 			})
-		}, "not Codex's format"},
+		}},
 		{"local marketplace source", func(t *testing.T, root, clone string) {
 			writeRecord(t, clone, map[string]any{
 				"source_type": "local", "source": upstream, "ref_name": nil, "sparse_paths": []string{},
 				"revision": runGitForGC(t, clone, "rev-parse", "HEAD"),
 			})
-		}, "does not name a Git source and revision"},
+		}},
 		{"unfinished install", func(t *testing.T, root, clone string) {
 			writeFile(t, filepath.Join(root, ".staging", "marketplace-upgrade-x", "SKILL.md"), 8)
-		}, ".staging holds an unfinished marketplace install"},
+		}},
 		{"backup left by a failed activation", func(t *testing.T, root, clone string) {
 			writeFile(t, filepath.Join(root, "marketplace-backup-x", "root", "SKILL.md"), 8)
-		}, "marketplace-backup-x: no Codex install record"},
+		}},
 		{"stray file", func(t *testing.T, root, clone string) {
 			writeFile(t, filepath.Join(root, "notes.txt"), 8)
-		}, "notes.txt is not a marketplace clone directory"},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			root := filepath.Join(t.TempDir(), "marketplaces")
 			clone := installCodexMarketplaceAt(t, root, "alpha", upstream)
 			tc.mutate(t, root, clone)
-			if reason := codexMarketplacesKeepReason(context.Background(), root); !strings.Contains(reason, tc.reason) {
-				t.Fatalf("reason = %q, want it to mention %q", reason, tc.reason)
+			if reason := managedArtifactKeepReason(context.Background(), marketplacesRel, root); !strings.Contains(reason, "no independent regenerability proof") {
+				t.Fatalf("unproven local content accepted: %q", reason)
 			}
 		})
 	}
 }
 
-// Git status reports a nested repository only as an untracked directory, and
-// not at all where a submodule path is recorded, so the checkout walk finds
-// one on its own.
-func TestCodexMarketplaceTreeKeepReason_FindsNestedRepositories(t *testing.T) {
+func TestManagedArtifact_PreservesNestedMarketplaceRepositories(t *testing.T) {
 	t.Parallel()
-	upstream := codexMarketplaceUpstream(t)
-	for _, tc := range []struct {
-		name  string
-		plant func(t *testing.T, clone string)
-	}{
-		{"repository directory", func(t *testing.T, clone string) {
-			if err := os.MkdirAll(filepath.Join(clone, "plugins", "alpha", "vendor", ".git"), 0o755); err != nil {
+	for _, gitfile := range []bool{false, true} {
+		t.Run(fmt.Sprintf("gitfile=%t", gitfile), func(t *testing.T) {
+			taskDir := t.TempDir()
+			root := filepath.Join(taskDir, filepath.FromSlash(marketplacesRel))
+			nested := filepath.Join(root, "alpha", "vendor", ".git")
+			if gitfile {
+				writeFile(t, nested, 16)
+			} else if err := os.MkdirAll(nested, 0o755); err != nil {
 				t.Fatal(err)
 			}
-		}},
-		{"gitfile", func(t *testing.T, clone string) {
-			writeFile(t, filepath.Join(clone, "plugins", "alpha", "vendor", ".git"), 16)
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			clone := installCodexMarketplaceAt(t, filepath.Join(t.TempDir(), "marketplaces"), "alpha", upstream)
-			gitDir := filepath.Join(clone, ".git")
-			if reason := codexMarketplaceTreeKeepReason(context.Background(), clone, gitDir); reason != "" {
-				t.Fatalf("clean checkout kept: %s", reason)
+			before := codexCacheSnapshot(t, root)
+			d := newGCTestDaemon(t, nil)
+			if removed, _, _ := d.cleanTaskArtifacts(context.Background(), taskDir, nil); removed != 0 {
+				t.Fatalf("removed = %d", removed)
 			}
-			tc.plant(t, clone)
-			if reason := codexMarketplaceTreeKeepReason(context.Background(), clone, gitDir); reason != "nested Git repository at plugins/alpha/vendor/.git" {
-				t.Fatalf("reason = %q, want the nested repository", reason)
+			if after := codexCacheSnapshot(t, root); !reflect.DeepEqual(before, after) {
+				t.Fatal("nested repository changed")
 			}
 		})
 	}
@@ -912,42 +926,42 @@ func TestCodexRemotePluginCatalogKeepReason(t *testing.T) {
 	t.Parallel()
 	const other = "0123456789abcdef.json"
 	for _, tc := range []struct {
-		name   string
-		setup  func(t *testing.T, dir string)
-		reason string
+		name  string
+		setup func(t *testing.T, dir string)
+		empty bool
 	}{
 		{"Codex cache files", func(t *testing.T, dir string) {
 			writeRemoteCatalog(t, dir, remoteCatalogFile, remoteCatalogFixture)
 			writeRemoteCatalog(t, dir, other, `{"schema_version":1,"plugins":[]}`)
-		}, ""},
+		}, false},
 		{"empty", func(t *testing.T, dir string) {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-		}, ""},
+		}, true},
 		{"credential file", func(t *testing.T, dir string) {
 			writeRemoteCatalog(t, dir, "auth.json", `{"access_token":"secret"}`)
-		}, "auth.json is not a Codex catalog cache file"},
+		}, false},
 		{"unknown field", func(t *testing.T, dir string) {
 			writeRemoteCatalog(t, dir, other, `{"schema_version":1,"plugins":[],"access_token":"secret"}`)
-		}, `unexpected field "access_token"`},
+		}, false},
 		{"not JSON", func(t *testing.T, dir string) {
 			writeRemoteCatalog(t, dir, other, "plugins")
-		}, "is not Codex's catalog format"},
+		}, false},
 		{"trailing data", func(t *testing.T, dir string) {
 			writeRemoteCatalog(t, dir, other, remoteCatalogFixture+"{}")
-		}, "trailing data"},
+		}, false},
 		{"missing plugins", func(t *testing.T, dir string) {
 			writeRemoteCatalog(t, dir, other, `{"schema_version":1}`)
-		}, "schema_version or plugins is missing"},
+		}, false},
 		{"plugin that is not an object", func(t *testing.T, dir string) {
 			writeRemoteCatalog(t, dir, other, `{"schema_version":1,"plugins":["alpha"]}`)
-		}, "plugins:"},
+		}, false},
 		{"directory with a cache file name", func(t *testing.T, dir string) {
 			if err := os.MkdirAll(filepath.Join(dir, other), 0o755); err != nil {
 				t.Fatal(err)
 			}
-		}, "is not a regular file"},
+		}, false},
 		{"link with a cache file name", func(t *testing.T, dir string) {
 			target := writeRemoteCatalog(t, t.TempDir(), remoteCatalogFile, remoteCatalogFixture)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -956,26 +970,24 @@ func TestCodexRemotePluginCatalogKeepReason(t *testing.T) {
 			if err := os.Symlink(target, filepath.Join(dir, other)); err != nil {
 				t.Skipf("symlink not supported: %v", err)
 			}
-		}, "is not a regular file"},
+		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := filepath.Join(t.TempDir(), "remote_plugin_catalog")
 			tc.setup(t, dir)
-			reason := codexRemotePluginCatalogKeepReason(context.Background(), dir)
-			if tc.reason == "" && reason != "" {
-				t.Fatalf("Codex's own catalog cache was kept: %s", reason)
+			reason := managedArtifactKeepReason(context.Background(), remoteCatalogRel, dir)
+			if tc.empty && reason != "" {
+				t.Fatalf("empty cache kept: %s", reason)
 			}
-			if !strings.Contains(reason, tc.reason) {
-				t.Fatalf("reason = %q, want it to mention %q", reason, tc.reason)
+			if !tc.empty && !strings.Contains(reason, "no independent regenerability proof") {
+				t.Fatalf("nonempty cache accepted: %q", reason)
 			}
 		})
 	}
 }
 
-// A kept cache is reported with its reason and size on every cycle, nothing
-// in it is touched, and it goes once Codex has replaced it with content it
-// writes itself.
+// Every cycle reports why a populated cache stays and its logical byte size.
 func TestManagedArtifact_RetainedCodexPluginCachesAreReportedEachCycle(t *testing.T) {
 	t.Parallel()
 	upstream := codexMarketplaceUpstream(t)
@@ -1017,7 +1029,10 @@ func TestManagedArtifact_RetainedCodexPluginCachesAreReportedEachCycle(t *testin
 			Reason        string `json:"reason"`
 			RetainedBytes int64  `json:"retained_bytes"`
 		}
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil || entry.Msg != "gc: managed artifact retained" {
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry.Msg != "gc: managed artifact retained" {
 			continue
 		}
 		if entry.RetainedBytes <= 0 {
@@ -1025,30 +1040,13 @@ func TestManagedArtifact_RetainedCodexPluginCachesAreReportedEachCycle(t *testin
 		}
 		reasons[entry.Reason]++
 	}
-	want := map[string]int{
-		`alpha: uncommitted changes: "?? notes.md"`:   2,
-		"auth.json is not a Codex catalog cache file": 2,
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
 	}
-	if fmt.Sprint(reasons) != fmt.Sprint(want) {
+	want := map[string]int{"nonempty plugin cache has no independent regenerability proof": 4}
+	if !reflect.DeepEqual(reasons, want) {
 		t.Fatalf("retention reasons = %v, want %v", reasons, want)
 	}
-
-	// Codex installs the marketplace again and refetches the catalog.
-	if err := os.RemoveAll(filepath.Join(taskDir, filepath.FromSlash(marketplacesRel))); err != nil {
-		t.Fatal(err)
-	}
-	installCodexMarketplace(t, taskDir, "alpha", upstream)
-	if err := os.RemoveAll(catalogDir); err != nil {
-		t.Fatal(err)
-	}
-	writeRemoteCatalog(t, catalogDir, remoteCatalogFile, remoteCatalogFixture)
-	stats := &gcStats{byPattern: map[string]int{}}
-	d.applyGCAction(context.Background(), taskDir, d.shouldCleanTaskDir(context.Background(), taskDir), stats)
-	if stats.artifactRemoved != 2 {
-		t.Fatalf("artifact_removed = %d after Codex replaced both caches, want 2", stats.artifactRemoved)
-	}
-	assertGone(t, taskDir, marketplacesRel)
-	assertGone(t, taskDir, remoteCatalogRel)
 }
 
 // The new paths sit behind the same gates as every managed artifact: an
@@ -1056,7 +1054,6 @@ func TestManagedArtifact_RetainedCodexPluginCachesAreReportedEachCycle(t *testin
 // the directory all keep them.
 func TestManagedArtifact_CodexPluginCachesRespectGates(t *testing.T) {
 	t.Parallel()
-	upstream := codexMarketplaceUpstream(t)
 	chatID := "dddddddd-0000-0000-0000-000000000004"
 
 	for _, tc := range []struct {
@@ -1079,8 +1076,7 @@ func TestManagedArtifact_CodexPluginCachesRespectGates(t *testing.T) {
 				WorkspaceID:   "ws",
 				CompletedAt:   time.Now().Add(-tc.completed),
 			})
-			installCodexMarketplace(t, taskDir, "alpha", upstream)
-			writeRemoteCatalog(t, filepath.Join(taskDir, filepath.FromSlash(remoteCatalogRel)), remoteCatalogFile, remoteCatalogFixture)
+			plantEmptyCodexCaches(t, taskDir, "")
 			if tc.active {
 				d.markActiveEnvRoot(taskDir)
 			}
@@ -1090,28 +1086,39 @@ func TestManagedArtifact_CodexPluginCachesRespectGates(t *testing.T) {
 				t.Fatalf("action = %d, want gcActionSkip", action)
 			}
 			d.applyGCAction(context.Background(), taskDir, action, &gcStats{byPattern: map[string]int{}})
-			assertKept(t, taskDir, marketplacesRel+"/alpha/.git/HEAD", remoteCatalogRel+"/"+remoteCatalogFile)
+			assertKept(t, taskDir, marketplacesRel, remoteCatalogRel)
 		})
 	}
 }
 
-// plantRegenerableCodexCaches fills dir with content that passes the Codex
-// cache checks wherever a link below codex-home could make a managed path
-// resolve: an empty marketplace install root and a valid catalog file at
-// every depth. A test that links into dir therefore proves the path check
-// itself refuses, not the content check.
-func plantRegenerableCodexCaches(t *testing.T, dir string) []string {
+// Plant only the empty roots that would be reached through linkRel. All
+// candidates pass the content check, so retention must come from the tested
+// path, ownership or lifecycle gate, not an unrelated populated cache.
+func plantEmptyCodexCaches(t *testing.T, dir, linkRel string) []string {
 	t.Helper()
 	var planted []string
-	for _, rel := range []string{".tmp/marketplaces", "marketplaces", ""} {
-		staging := filepath.Join(dir, filepath.FromSlash(rel), ".staging")
-		if err := os.MkdirAll(staging, 0o755); err != nil {
+	for _, rel := range []string{marketplacesRel, remoteCatalogRel} {
+		suffix := rel
+		if linkRel != "" {
+			if rel == linkRel {
+				suffix = ""
+			} else if strings.HasPrefix(rel, linkRel+"/") {
+				suffix = strings.TrimPrefix(rel, linkRel+"/")
+			} else {
+				continue
+			}
+		}
+		path := filepath.Join(dir, filepath.FromSlash(suffix))
+		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		planted = append(planted, staging)
+		if reason := managedArtifactKeepReason(context.Background(), rel, path); reason != "" {
+			t.Fatalf("positive control kept: %s", reason)
+		}
+		planted = append(planted, path)
 	}
-	for _, rel := range []string{"cache/remote_plugin_catalog", "remote_plugin_catalog", ""} {
-		planted = append(planted, writeRemoteCatalog(t, filepath.Join(dir, filepath.FromSlash(rel)), remoteCatalogFile, remoteCatalogFixture))
+	if len(planted) == 0 {
+		t.Fatalf("no candidate below %q", linkRel)
 	}
 	return planted
 }
@@ -1125,7 +1132,7 @@ func TestManagedArtifact_CodexPluginCachesDoNotFollowLinks(t *testing.T) {
 	for _, linkRel := range []string{"codex-home", "codex-home/.tmp", marketplacesRel, "codex-home/cache", remoteCatalogRel} {
 		t.Run(linkRel, func(t *testing.T) {
 			taskDir, outside := t.TempDir(), t.TempDir()
-			planted := plantRegenerableCodexCaches(t, outside)
+			planted := plantEmptyCodexCaches(t, outside, linkRel)
 			linkPath := filepath.Join(taskDir, filepath.FromSlash(linkRel))
 			if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
 				t.Fatal(err)

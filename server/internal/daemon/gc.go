@@ -995,7 +995,7 @@ func (d *Daemon) cleanManagedTaskArtifacts(ctx context.Context, taskDir string) 
 		if _, ok := managedArtifactTarget(absRoot, rel); !ok {
 			continue
 		}
-		if rmErr := os.RemoveAll(target); rmErr != nil {
+		if rmErr := removeManagedArtifact(rel, target); rmErr != nil {
 			d.logger.Warn("gc: artifact remove failed", "path", target, "error", rmErr)
 			continue
 		}
@@ -1141,7 +1141,13 @@ func (d *Daemon) cleanTaskArtifactsMatching(ctx context.Context, taskDir string,
 				return filepath.SkipDir
 			}
 		}
-		if rmErr := os.RemoveAll(path); rmErr != nil {
+		var rmErr error
+		if managed {
+			rmErr = removeManagedArtifact(rel, path)
+		} else {
+			rmErr = os.RemoveAll(path)
+		}
+		if rmErr != nil {
 			d.logger.Warn("gc: artifact remove failed", "path", path, "error", rmErr)
 			return filepath.SkipDir
 		}
