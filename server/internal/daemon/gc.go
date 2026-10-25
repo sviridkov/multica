@@ -968,6 +968,10 @@ func (d *Daemon) cleanTaskArtifacts(ctx context.Context, taskDir string, pattern
 // gone. cleanTaskArtifacts still walks, because its basename patterns can match
 // at any depth; this one has nothing to search for.
 func (d *Daemon) cleanManagedTaskArtifacts(ctx context.Context, taskDir string) (removed int, bytes int64, perPattern map[string]int) {
+	return d.cleanManagedTaskArtifactsWithRemoval(ctx, taskDir, removeManagedArtifact)
+}
+
+func (d *Daemon) cleanManagedTaskArtifactsWithRemoval(ctx context.Context, taskDir string, remove func(rel, dir string) error) (removed int, bytes int64, perPattern map[string]int) {
 	perPattern = map[string]int{}
 	if taskDir == "" {
 		return
@@ -995,7 +999,7 @@ func (d *Daemon) cleanManagedTaskArtifacts(ctx context.Context, taskDir string) 
 		if _, ok := managedArtifactTarget(absRoot, rel); !ok {
 			continue
 		}
-		if rmErr := removeManagedArtifact(rel, target); rmErr != nil {
+		if rmErr := remove(rel, target); rmErr != nil {
 			d.logger.Warn("gc: artifact remove failed", "path", target, "error", rmErr)
 			continue
 		}
@@ -1060,6 +1064,10 @@ func hasManagedArtifact(taskDir string) bool {
 }
 
 func (d *Daemon) cleanTaskArtifactsMatching(ctx context.Context, taskDir string, matcher artifactMatcher) (removed int, bytes int64, perPattern map[string]int) {
+	return d.cleanTaskArtifactsMatchingWithRemoval(ctx, taskDir, matcher, removeManagedArtifact)
+}
+
+func (d *Daemon) cleanTaskArtifactsMatchingWithRemoval(ctx context.Context, taskDir string, matcher artifactMatcher, remove func(rel, dir string) error) (removed int, bytes int64, perPattern map[string]int) {
 	perPattern = map[string]int{}
 	if taskDir == "" || (len(matcher.basenames) == 0 && len(matcher.exactPaths) == 0) {
 		return
@@ -1143,7 +1151,7 @@ func (d *Daemon) cleanTaskArtifactsMatching(ctx context.Context, taskDir string,
 		}
 		var rmErr error
 		if managed {
-			rmErr = removeManagedArtifact(rel, path)
+			rmErr = remove(rel, path)
 		} else {
 			rmErr = os.RemoveAll(path)
 		}

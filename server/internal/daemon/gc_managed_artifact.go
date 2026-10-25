@@ -40,9 +40,9 @@ func removeManagedArtifact(rel, dir string) error {
 	case execenv.CodexSandboxBinArtifact:
 		return os.RemoveAll(dir)
 	case execenv.CodexMarketplacesArtifact, execenv.CodexRemotePluginCatalogArtifact:
-		// Never recurse: a writer may have populated the empty directory
-		// since inspection, in which case removal must fail and retain it.
-		return os.Remove(dir)
+		// The OS must reject both new contents and a file/link substituted
+		// after inspection. os.Remove can unlink a replacement file.
+		return removeEmptyManagedDirectory(dir)
 	default:
 		return fmt.Errorf("no removal contract for managed path %q", rel)
 	}
