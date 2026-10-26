@@ -7,7 +7,8 @@ import (
 	"os"
 )
 
-func protectedPath(string) error { return fmt.Errorf("unsupported platform") }
+func protectedPath(string) error                 { return fmt.Errorf("unsupported platform") }
+func protectedArtifactPath(string, Policy) error { return fmt.Errorf("unsupported platform") }
 func entryMetadata(string, os.FileInfo) (string, error) {
 	return "", fmt.Errorf("unsupported platform")
 }

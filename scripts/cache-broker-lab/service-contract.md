@@ -142,3 +142,99 @@ crash and noninterruption evidence, exact release/installed commit, safe run →
 restore → GC proof, coordinator/owner and a single continuation event. The current
 experiment does not authorize that deployment. Existing L2 LYNAIX-1281 reviews
 this exact delta; no new Ask3/Jev series is created.
+
+## Runtime integration experiment
+
+The disposable test now uses Multica's actual `agent.New("codex").Execute`
+backend, its initialize/thread-start or resume/turn lifecycle and Result channel.
+A measured stdio transport forwards it over pinned mTLS to a fixed offline
+app-server fixture under a separate ordinary identity. The producer remains
+pinned real Codex source; the runtime endpoint is a protocol fixture, not a full
+installed Codex app-server or a paid model call. No caller chooses its executable,
+arguments, UID/SID, paths or containment policy.
+
+A persistent privileged supervisor owns launch authority and native containment.
+The restartable driver alone holds its private client credential, outside task
+read access. It reserves an exact run/lease/generation/identity durably before
+launch, never reuses identities, and seals future launches before querying native
+quiescence. Driver Result, leader exit, pipe closure, elapsed time and a restarted
+cache service are insufficient evidence. Native query failures and a reopened
+supervisor journal without its original domain retain data. This last check is a
+journal reopen test, not a crash of the whole supervisor test harness.
+
+On Windows, an ordinary token starts suspended, is assigned to a private,
+non-inherited Job without breakaway, then resumes. The supervisor queries actual
+Job ActiveProcesses after the launch authority is sealed. Child/grandchild
+processes inherit the Job; breakaway is tested. The fixed offline fixture cannot
+create an external process broker. **A Job alone is not a sandbox for arbitrary
+untrusted code**: delegation to another system service or user session would
+require additional IPC/identity confinement before production authority is safe.
+No generic Windows sandbox or installed Codex compatibility is claimed.
+
+On macOS, every run receives a fresh nonlogin UID/GID and an inherited sandbox:
+only the measured fixture may execute, no network/external launch broker or
+privilege transition is allowed, and writes are limited to the home/workspace.
+A root-only libproc helper uses `proc_listpids(PROC_RUID_ONLY)` to count every
+process with that immutable real UID, including detached and reparented ones.
+The bounded 65,536-PID buffer rejects errors, malformed results and possible
+truncation. Fresh-UID census must be empty before launch. Sole launch authority,
+no external delegator and the inability to change RUID are essential assumptions;
+PID, PPID or process-group absence is never substituted for that census. The
+native artifact records OS/kernel version; other kernels need their own proof.
+
+The exact home, `.tmp` and `cache` parents permit creation of ordinary task
+outputs while remaining protected against replacement. On macOS they are
+root-owned sticky 01770 with the exact run GID, no ACL and no other-writes. On
+Windows the exact SID receives create-file/create-directory rights, but no
+DELETE_CHILD, DELETE, WRITE_DAC or WRITE_OWNER on those parents. Published cache
+children remain privileged-owned and immutable to task identities. Task-created
+siblings remain outside reclamation. Every other ancestor keeps the original
+strict policy. This proves only the tested writable layout, not compatibility
+with every Codex home write (for example a plugin self-update).
+
+The native matrix runs both GC routes, both exact artifacts and two fresh
+generations. After a real adapter Result it kills the driver while an ordinary
+double-forked descendant still reads the cache, starts a recovery driver, restarts
+the cache service and checks zero deletion/credit. Only a successful native query
+after the fixture child exits allows end/reconcile, a new idle period and GC.
+
+## Capacity and producer privilege plan
+
+Implemented admission bounds per experimental service namespace are 64 homes,
+64 generations per home, 1,024 retained request outcomes and a 4 MiB registry on
+both read and write. At 16 quarantined artifacts, new registration/begin/prepare
+is refused. Existing outcomes remain queryable; no journal or uncertain cache is
+evicted to make room. A configured finite runtime identity list permits one home
+and refuses further generations when exhausted. Supervisor journals accept at
+most 64 never-reused run identities and 1 MiB on read. A registry write failure
+(including a byte cap) latches mutation authority; recovery preserves uncertainty.
+A full request journal stops mutations, including end/reconcile: an operator must
+retain that namespace and resolve it, never truncate its idempotency history.
+
+These are metadata/admission limits, **not an enforced aggregate disk quota**.
+Partial producer output, writable task outputs and unknown historical files can
+exceed them. Disposable VMs bound this lab's lifetime and disk; they do not prove
+production storage bounds. Before production, provision a separate quota-backed
+staging/retention volume: proposed maximum 1 GiB per producer generation and
+16 GiB retained quarantine per namespace, with refusal of new acquisition on
+exhaustion and no automatic deletion of unknown data. Keep task-owned outputs in
+a separate quota domain. Review these values against measured real workloads;
+changing them grants no cleanup authority. Rotation requires explicit draining,
+a verified archive of outcomes/evidence and a new namespace/epoch; no expiry may
+turn an active/unknown lease into terminal. Expired uncertain data is an operator
+obligation, not deletion permission.
+
+The producer still runs privileged in this lab; lowering it is a remaining
+implementation step. The proposed boundary runs the measured recipe under a
+fresh producer identity and the same closed native containment, with access only
+to protected read-only source, recipe, approved network fixture and bounded
+staging. It cannot read service/driver credentials or write publication/journals.
+Before publication, seal launch authority and prove the entire producer domain
+quiescent. Reject links, unsupported metadata, unexpected Git/content, output
+outside staging or incomplete acquisition/readback evidence. Move/copy validated
+bytes into a new privileged-owned namespace with mutation rights revoked, then
+inventory that immutable publication and commit its receipt. Never treat producer
+Wait alone as proof or adopt output after uncertain termination. A malicious or
+compromised pinned producer remains outside this experiment's proven boundary.
+This plan and the missing disk/producer/Windows IPC controls must be implemented
+and reviewed before any working Desktop deployment proposal.

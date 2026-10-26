@@ -25,6 +25,7 @@ type ServiceConfig struct {
 	ArtifactTTLSeconds int64
 	ReadOnly           bool
 	Fault              func(string) error `json:"-"` // Disposable fault harness only.
+	RuntimeHomes       []WritableHome
 }
 
 // Request deliberately has no paths, commands, timestamps or lifecycle flags.
@@ -68,6 +69,30 @@ type registry struct {
 	Requests map[string]completedRequest
 }
 
+const (
+	maxRegistryBytes         = 4 << 20
+	maxRegisteredHomes       = 64
+	maxHomeGenerations       = 64
+	maxRequestOutcomes       = 1024
+	quarantineAdmissionLimit = 16
+)
+
+func readBoundedJournal(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	err = errors.Join(err, f.Close())
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errors.New("journal byte limit exceeded; retain namespace")
+	}
+	return data, nil
+}
+
 type Service struct {
 	mu       sync.Mutex
 	config   ServiceConfig
@@ -102,7 +127,7 @@ func openService(cfg ServiceConfig) (*Service, error) {
 	}
 	s := &Service{config: cfg, epoch: nonce(), lock: lock, fault: cfg.Fault}
 	fail := func(err error) (*Service, error) { s.Close(); return nil, err }
-	data, err := os.ReadFile(filepath.Join(cfg.Root, "registry.json"))
+	data, err := readBoundedJournal(filepath.Join(cfg.Root, "registry.json"), maxRegistryBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		entries, e := os.ReadDir(cfg.Root)
 		if e != nil {
@@ -147,14 +172,14 @@ func openService(cfg ServiceConfig) (*Service, error) {
 }
 
 func (s *Service) validateRegistry() error {
-	if s.journal.Version != 1 || s.journal.Homes == nil || s.journal.Requests == nil {
+	if s.journal.Version != 1 || s.journal.Homes == nil || s.journal.Requests == nil || len(s.journal.Homes) > maxRegisteredHomes || len(s.journal.Requests) > maxRequestOutcomes {
 		return errors.New("unsupported or incomplete registry")
 	}
 	for id, h := range s.journal.Homes {
 		if !validID(id) || h == nil || h.ID != id || h.RecipeID != s.config.RecipeID || h.Revision == 0 || h.Generations == nil {
 			return errors.New("invalid registered home")
 		}
-		if uint64(len(h.Generations)) != h.Current {
+		if uint64(len(h.Generations)) != h.Current || h.Current > maxHomeGenerations {
 			return errors.New("missing generation")
 		}
 		for n, g := range h.Generations {
@@ -229,6 +254,9 @@ func (s *Service) persist() (err error) {
 	data, err := json.Marshal(s.journal)
 	if err != nil {
 		return err
+	}
+	if len(data) > maxRegistryBytes {
+		return errors.New("registry byte limit exceeded; service latched")
 	}
 	name := filepath.Join(s.config.Root, "registry-"+nonce()+".tmp")
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
@@ -314,8 +342,29 @@ func (s *Service) Execute(ctx context.Context, req Request) Response {
 		}
 		return cloneResponse(old.Response)
 	}
+	if len(s.journal.Requests) >= maxRequestOutcomes {
+		return bad(errors.New("request journal capacity reached; preserve outcomes and retained data"))
+	}
+	if req.Operation == "register" || req.Operation == "begin" || req.Operation == "prepare" {
+		quarantined := 0
+		for _, home := range s.journal.Homes {
+			for _, g := range home.Generations {
+				for _, state := range g.Artifacts {
+					if state == "quarantined" {
+						quarantined++
+					}
+				}
+			}
+		}
+		if quarantined >= quarantineAdmissionLimit {
+			return bad(errors.New("quarantine admission limit reached; no automatic eviction"))
+		}
+	}
 	var h *Home
 	if req.Operation == "register" {
+		if len(s.journal.Homes) >= maxRegisteredHomes || (s.config.RuntimeHomes != nil && len(s.journal.Homes) != 0) {
+			return bad(errors.New("home or immutable identity allocation capacity reached"))
+		}
 		if req.RecipeID != s.config.RecipeID || req.HomeID != "" || req.Generation != 0 {
 			return bad(errors.New("unallowlisted registration"))
 		}
@@ -356,6 +405,12 @@ func (s *Service) Execute(ctx context.Context, req Request) Response {
 
 func (s *Service) mutate(ctx context.Context, h *Home, req Request, resp *Response) error {
 	if req.Operation == "begin" {
+		if h.Current >= maxHomeGenerations {
+			return errors.New("generation capacity reached; retained namespaces preserved")
+		}
+		if s.config.RuntimeHomes != nil && h.Current >= uint64(len(s.config.RuntimeHomes)) {
+			return errors.New("runtime identity capacity reached; retained generations preserved")
+		}
 		if req.RunID == "" || len(req.RunID) > 128 || (req.Intent != "launch" && req.Intent != "restore") {
 			return errors.New("invalid trusted run reservation")
 		}
@@ -473,6 +528,13 @@ func (s *Service) broker(h *Home, g *Generation) (*Broker, error) {
 	p := s.config.Recipe
 	p.Root, p.HomeID = s.generationPath(h.ID, g.ID), fmt.Sprintf("%s/%d", h.ID, g.ID)
 	p.ArtifactTTLSeconds = s.config.ArtifactTTLSeconds
+	if s.config.RuntimeHomes != nil {
+		if g.ID == 0 || g.ID > uint64(len(s.config.RuntimeHomes)) {
+			return nil, errors.New("missing immutable runtime identity")
+		}
+		layout := s.config.RuntimeHomes[g.ID-1]
+		p.RuntimeHome = &layout
+	}
 	p.Active, p.Terminal = g.Lifecycle == "active", g.Lifecycle == "terminal"
 	p.IdleSeconds = int64(time.Since(time.Unix(0, g.EndedAt)) / time.Second)
 	b, err := Open(p)

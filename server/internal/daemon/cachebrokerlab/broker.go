@@ -32,6 +32,19 @@ type Policy struct {
 	HomeID                                                 string
 	ArtifactTTLSeconds                                     int64
 	Terminal, Active, LocalDirectory                       bool
+	RuntimeHome                                            *WritableHome
+}
+
+// WritableHome names an administrator-installed native identity for the three
+// exact create-only parents. It never grants mutations to cache contents.
+type WritableHome struct {
+	Group uint32
+	SID   string
+}
+
+func runtimeParent(path, root string) bool {
+	home := filepath.Join(root, "codex-home")
+	return path == home || path == filepath.Join(home, ".tmp") || path == filepath.Join(home, "cache")
 }
 
 type Entry struct {
@@ -288,7 +301,7 @@ func (b *Broker) Reclaim(ctx context.Context, expected Receipt) (Outcome, error)
 		return retain("source binding changed: " + err.Error())
 	}
 	target := filepath.Join(b.policy.Root, filepath.FromSlash(r.Artifact))
-	if err := protectedPath(target); err != nil {
+	if err := protectedArtifactPath(target, b.policy); err != nil {
 		return retain("namespace protection changed: " + err.Error())
 	}
 	current, err := inventory(target)

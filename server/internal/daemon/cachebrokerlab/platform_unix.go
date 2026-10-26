@@ -14,6 +14,10 @@ import (
 )
 
 func protectedPath(path string) error {
+	return protectedPathLayout(path, Policy{})
+}
+func protectedArtifactPath(path string, p Policy) error { return protectedPathLayout(path, p) }
+func protectedPathLayout(path string, p Policy) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("isolated privileged broker identity required; euid=%d", os.Geteuid())
 	}
@@ -26,7 +30,12 @@ func protectedPath(path string) error {
 			return err
 		}
 		s, ok := st.Sys().(*syscall.Stat_t)
-		if !ok || s.Uid != 0 || st.Mode().Perm()&0022 != 0 || st.Mode()&os.ModeSymlink != 0 {
+		writable := p.RuntimeHome != nil && runtimeParent(current, p.Root)
+		modeOK := st.Mode().Perm()&0022 == 0
+		if writable {
+			modeOK = st.IsDir() && st.Mode().Perm() == 0770 && st.Mode()&os.ModeSticky != 0 && p.RuntimeHome.Group != 0 && ok && s.Gid == p.RuntimeHome.Group
+		}
+		if !ok || s.Uid != 0 || !modeOK || st.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("unprotected component %s", current)
 		}
 		if err := noACL(current); err != nil {

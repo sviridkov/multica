@@ -31,7 +31,7 @@ type serviceLab struct {
 	home                  *cachebrokerlab.Home
 }
 
-func newServiceLab(t *testing.T) *serviceLab {
+func newServiceLab(t *testing.T, options ...func(*cachebrokerlab.ServiceConfig)) *serviceLab {
 	t.Helper()
 	cfg := mustLab(t)
 	var recipe cachebrokerlab.Policy
@@ -49,10 +49,14 @@ func newServiceLab(t *testing.T) *serviceLab {
 	if err := cachebrokerlab.CreateLabIdentity(s.control); err != nil {
 		t.Fatal(err)
 	}
+	serviceConfig := cachebrokerlab.ServiceConfig{Root: s.state, RecipeID: "codex-pinned-v1", Recipe: recipe, ArtifactTTLSeconds: 1}
+	for _, option := range options {
+		option(&serviceConfig)
+	}
 	data, _ := json.Marshal(struct {
 		Service cachebrokerlab.ServiceConfig
 		Control string
-	}{cachebrokerlab.ServiceConfig{Root: s.state, RecipeID: "codex-pinned-v1", Recipe: recipe, ArtifactTTLSeconds: 1}, s.control})
+	}{serviceConfig, s.control})
 	if err := os.WriteFile(filepath.Join(s.control, "config.json"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -159,6 +163,11 @@ func (s *serviceLab) deny(t *testing.T, r cachebrokerlab.Request) {
 
 func (s *serviceLab) gc(t *testing.T, root, route, artifact string) (int, int64) {
 	t.Helper()
+	return s.gcExpect(t, root, route, artifact, false)
+}
+
+func (s *serviceLab) gcExpect(t *testing.T, root, route, artifact string, denied bool) (int, int64) {
+	t.Helper()
 	d := newGCTestDaemon(t, http.NewServeMux())
 	reclaim := func(ctx context.Context, rel string) (cachebrokerlab.Outcome, error) {
 		if rel != artifact {
@@ -166,6 +175,16 @@ func (s *serviceLab) gc(t *testing.T, root, route, artifact string) (int, int64)
 		}
 		r := s.request("reclaim")
 		r.Artifact = rel
+		if denied {
+			resp, err := s.client.Call(ctx, r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.Error == "" || resp.Outcome.Removed || resp.Outcome.Bytes != 0 {
+				t.Fatal("GC accepted uncertain lifecycle")
+			}
+			return cachebrokerlab.Outcome{Reason: resp.Error}, nil
+		}
 		resp := s.call(t, r)
 		return resp.Outcome, nil
 	}

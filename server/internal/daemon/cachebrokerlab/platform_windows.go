@@ -12,6 +12,10 @@ import (
 const fileDeleteChild windows.ACCESS_MASK = 0x40
 
 func protectedPath(path string) error {
+	return protectedPathLayout(path, Policy{})
+}
+func protectedArtifactPath(path string, p Policy) error { return protectedPathLayout(path, p) }
+func protectedPathLayout(path string, p Policy) error {
 	token := windows.GetCurrentProcessToken()
 	user, err := token.GetTokenUser()
 	if err != nil {
@@ -28,7 +32,14 @@ func protectedPath(path string) error {
 		if st.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
 			return fmt.Errorf("linked protected component: %s", current)
 		}
-		if err := protectedACLForPath(current, current == filepath.Dir(current)); err != nil {
+		createSID := ""
+		if p.RuntimeHome != nil && runtimeParent(current, p.Root) {
+			createSID = p.RuntimeHome.SID
+			if createSID == "" {
+				return fmt.Errorf("missing runtime SID")
+			}
+		}
+		if err := protectedACLWithCreator(current, current == filepath.Dir(current), createSID); err != nil {
 			return err
 		}
 		if current == filepath.Dir(current) {
@@ -39,6 +50,9 @@ func protectedPath(path string) error {
 }
 func protectedACL(path string) error { return protectedACLForPath(path, false) }
 func protectedACLForPath(path string, volumeRoot bool) error {
+	return protectedACLWithCreator(path, volumeRoot, "")
+}
+func protectedACLWithCreator(path string, volumeRoot bool, createSID string) error {
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
@@ -76,6 +90,9 @@ func protectedACLForPath(path string, volumeRoot bool) error {
 			continue
 		}
 		mutating := windows.ACCESS_MASK(windows.GENERIC_ALL | windows.GENERIC_WRITE | windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER | windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA | windows.FILE_WRITE_EA | windows.FILE_WRITE_ATTRIBUTES | fileDeleteChild)
+		if createSID != "" && sid.String() == createSID {
+			mutating &^= windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA
+		}
 		if volumeRoot {
 			mutating = windows.GENERIC_ALL | windows.GENERIC_WRITE | windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER | fileDeleteChild
 		}

@@ -1,6 +1,7 @@
 package cachebrokerlab
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -217,5 +218,81 @@ func TestServiceRollbackAndCorruptRegistryNeverRewriteStoredState(t *testing.T) 
 	after, err = os.ReadFile(path)
 	if err != nil || string(after) != `{"Version":99}` {
 		t.Fatal("corrupt state reset")
+	}
+}
+
+func TestServiceAdmissionLimitsPreserveJournalAndRetainedData(t *testing.T) {
+	for _, kind := range []string{"homes", "requests", "quarantine"} {
+		t.Run(kind, func(t *testing.T) {
+			s := serviceFixture(t, t.TempDir())
+			h := serviceCall(t, s, Request{Operation: "register", RequestID: "r", RecipeID: "pinned-fixture"}).Home
+			switch kind {
+			case "homes":
+				for i := 1; i < 64; i++ {
+					id := nonce()
+					s.journal.Homes[id] = &Home{ID: id, RecipeID: s.config.RecipeID, Revision: 1, Generations: map[uint64]*Generation{}}
+				}
+			case "requests":
+				for i := 1; i < 1024; i++ {
+					s.journal.Requests[nonce()] = completedRequest{}
+				}
+			case "quarantine":
+				for i := 1; i <= 16; i++ {
+					n := uint64(i)
+					s.journal.Homes[h.ID].Generations[n] = &Generation{ID: n, Lifecycle: "terminal", RunID: nonce(), LeaseID: nonce(), Artifacts: map[string]string{Catalog: "quarantined"}}
+					s.journal.Homes[h.ID].Current = n
+				}
+			}
+			marker := filepath.Join(s.config.Root, "retained-unknown")
+			if err := os.WriteFile(marker, []byte("never quota-evict uncertain data"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.persist(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(s.config.Root, "registry.json")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := s.Execute(context.Background(), Request{Operation: "register", RequestID: "new", Epoch: s.epoch, RecipeID: s.config.RecipeID})
+			if resp.Error == "" {
+				t.Fatal("capacity admitted new registration")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(before) {
+				t.Fatal("admission refusal mutated journal", err)
+			}
+			if data, err := os.ReadFile(marker); err != nil || string(data) != "never quota-evict uncertain data" {
+				t.Fatal("capacity evicted retained bytes", err)
+			}
+			if resp := s.Execute(context.Background(), Request{Operation: "result", RequestID: "r"}); resp.Error != "" {
+				t.Fatal("capacity disabled committed result query", resp.Error)
+			}
+		})
+	}
+}
+
+func TestServiceOversizedJournalFailsWithoutRewrite(t *testing.T) {
+	s := serviceFixture(t, t.TempDir())
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(s.config.Root, "registry.json")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := append(bytes.Repeat([]byte(" "), 4<<20), original...)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := openService(s.config); err == nil {
+		opened.Close()
+		t.Fatal("oversized journal accepted")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || len(after) != len(data) {
+		t.Fatal("oversized journal changed", err)
 	}
 }

@@ -20,6 +20,13 @@ type labReclaimer func(context.Context, string) (cachebrokerlab.Outcome, error)
 type nativeLab struct {
 	Root, Producer, Service, Git, TaskUser, TaskPassword, TaskTemp string
 	UID, GID                                                       uint32
+	Census                                                         string
+	RuntimeIdentities                                              []runtimeIdentity
+}
+
+type runtimeIdentity struct {
+	UID, GID            uint32
+	User, Password, SID string
 }
 
 func mustLab(t *testing.T) nativeLab {
