@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -15,6 +16,11 @@ import (
 
 func nativeProducerQuotaError(err error) bool {
 	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT)
+}
+
+func nativeProducerDiagnostics(d *nativeRuntimeDomain) string {
+	out, err := exec.Command("/bin/ps", "-U", strconv.FormatUint(uint64(d.id.UID), 10), "-o", "pid=,ppid=,ruid=,uid=,stat=,comm=").CombinedOutput()
+	return fmt.Sprintf("RUID=%d ps_error=%v processes=%s", d.id.UID, err, out)
 }
 
 func nativeProducerVolume(t *testing.T, cfg nativeLab) string {
@@ -120,7 +126,7 @@ func nativeProducerDrain(t *testing.T, cfg nativeLab, c producerConfig) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("orphan not drained")
+			t.Fatal("orphan not drained", nativeProducerDiagnostics(d))
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

@@ -352,7 +352,7 @@ func TestBrokerProducerSupervisor(t *testing.T) {
 					break
 				}
 				if time.Now().After(deadline) {
-					err = fmt.Errorf("descendants did not quiesce")
+					err = fmt.Errorf("descendants did not quiesce: %s", nativeProducerDiagnostics(d.inner))
 					break
 				}
 				time.Sleep(20 * time.Millisecond)

@@ -20,6 +20,11 @@ func nativeProducerQuotaError(err error) bool {
 	return errors.Is(err, windows.ERROR_DISK_FULL) || errors.Is(err, windows.ERROR_HANDLE_DISK_FULL) || errors.Is(err, windows.ERROR_DISK_QUOTA_EXCEEDED)
 }
 
+func nativeProducerDiagnostics(d *nativeRuntimeDomain) string {
+	active, err := d.Active()
+	return fmt.Sprintf("Job active=%d query_error=%v", active, err)
+}
+
 func nativeProducerVolume(t *testing.T, cfg nativeLab) string {
 	t.Helper()
 	root, err := os.MkdirTemp(cfg.Root, "quota-")
