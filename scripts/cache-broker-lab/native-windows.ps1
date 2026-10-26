@@ -20,7 +20,7 @@ $runner = @"
 `$nativeExit = 97
 `$env:MULTICA_NATIVE_BROKER_CONFIG='$labRoot\config.json'
 try {
-  & '$labRoot\broker-test.exe' -test.run '^TestBrokerNative' -test.v -test.timeout 15m *> '$labRoot\native.log'
+  & '$labRoot\broker-test.exe' '-test.run=^TestBrokerNative' '-test.v' '-test.timeout=15m' *> '$labRoot\native.log'
   if (`$null -eq `$LASTEXITCODE) { throw 'Test process supplied no exit code' }
   `$nativeExit = `$LASTEXITCODE
 } catch {
