@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -48,8 +49,30 @@ func nativeProducerVolume(t *testing.T, cfg nativeLab) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if out, err := exec.Command("/usr/bin/hdiutil", "detach", mount).CombinedOutput(); err != nil {
-			t.Errorf("detach disposable quota image: %v %s", err, out)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		for attempt := 1; ; attempt++ {
+			out, err := exec.CommandContext(ctx, "/usr/bin/hdiutil", "detach", mount).CombinedOutput()
+			if err == nil {
+				if attempt > 1 {
+					t.Logf("QUOTA_DETACH settled_after_attempts=%d forced=false image_retained=true", attempt)
+				}
+				return
+			}
+			var status *exec.ExitError
+			if ctx.Err() != nil || !errors.As(err, &status) || status.ExitCode() != int(syscall.EBUSY) {
+				t.Errorf("detach disposable quota image (image retained): %v %s", err, out)
+				return
+			}
+			// A busy volume remains mounted and intact. Retry only the ordinary
+			// detach; never force unmount or discard retained staging data.
+			t.Logf("QUOTA_DETACH_BUSY attempt=%d forced=false image_retained=true", attempt)
+			select {
+			case <-ctx.Done():
+				t.Errorf("disposable quota image remained busy (image retained): %v %s", ctx.Err(), out)
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
 	})
 	t.Log("STAGING_QUOTA filesystem=APFS fixed_image_bytes=134217728 task_results_separate=true")

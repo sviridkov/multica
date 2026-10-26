@@ -75,8 +75,12 @@ func nativeService(t *testing.T, cfg nativeLab, control, name string) (func(), f
 		out, err := exec.Command("/bin/launchctl", "bootout", "system/"+name).CombinedOutput()
 		if err != nil {
 			t.Errorf("launchd bootout: %v %s", err, out)
+			return
 		}
 		loaded = false
+		// bootout removes the registration before all process resources have
+		// necessarily drained. Volume cleanup is registered before this stop.
+		nativeWaitServiceTree(t, control)
 	}
 	t.Cleanup(stop)
 	return start, stop
