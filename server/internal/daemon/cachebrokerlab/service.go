@@ -109,7 +109,7 @@ type Service struct {
 	lock             *os.File
 	fault            func(string) error
 	poisoned         bool
-	storageProbe     storageProbe
+	storageProbe     storageProbe // nil creates a fresh native probe per check; fixtures may override.
 	protectedStorage bool
 }
 
@@ -124,7 +124,7 @@ func OpenService(cfg ServiceConfig) (*Service, error) {
 		if err := cfg.Storage.protected(cfg.Root); err != nil {
 			return nil, err
 		}
-		if err := cfg.Storage.check(cfg.Root, false, nativeStorageVolume); err != nil {
+		if err := cfg.Storage.check(cfg.Root, false, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -146,7 +146,7 @@ func OpenService(cfg ServiceConfig) (*Service, error) {
 // openService contains the same disk/lock/recovery implementation used natively;
 // unit tests use an ordinary temporary directory, without claiming OS isolation.
 func openService(cfg ServiceConfig) (*Service, error) {
-	return openServiceWithStorage(cfg, nativeStorageVolume)
+	return openServiceWithStorage(cfg, nil)
 }
 
 func openServiceWithStorage(cfg ServiceConfig, probe storageProbe) (*Service, error) {

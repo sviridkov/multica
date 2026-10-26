@@ -5,6 +5,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func newNativeStorageProbe() storageProbe { return nativeStorageVolume }
+
 func nativeStorageVolume(path string) (storageReading, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {

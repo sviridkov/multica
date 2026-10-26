@@ -400,6 +400,13 @@ still poisons the service. No automatic eviction, truncation, resize or slot reu
 is implemented to obtain space. Exhausted installations require a separately
 reviewed operator recovery plan; supplying a different empty volume is refused.
 
+On macOS, one check resolves a filesystem UUID once per device/filesystem ID.
+Every registered path still receives fresh statfs membership, capacity and free
+space readings; a nested mount gets its own UUID query. The UUID map is discarded
+when that check returns, so every subsequent mutation re-queries its volumes.
+Failed queries never establish cached authority. Windows uses its native APIs
+directly. No identity or available-space cache survives between operations.
+
 Before invoking the privileged acquisition factory, the service commits a claim
 for the exact slot with home/run/lease binding. The returned plan must match that
 slot and its registered capacity. A successful acquisition leaves the stage

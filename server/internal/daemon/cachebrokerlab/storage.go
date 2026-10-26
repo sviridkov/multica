@@ -56,7 +56,7 @@ func CaptureStorage(root string, layout StorageLayout) (*StorageLayout, error) {
 		}
 		v.Identity, v.CapacityBytes = r.Identity, r.Capacity
 	}
-	if err := layout.check(root, true, nativeStorageVolume); err != nil {
+	if err := layout.check(root, true, nil); err != nil {
 		return nil, err
 	}
 	return &layout, nil
@@ -94,6 +94,9 @@ func within(root, path string) bool {
 }
 
 func (l *StorageLayout) check(root string, admission bool, probe storageProbe) error {
+	if probe == nil {
+		probe = newNativeStorageProbe()
+	}
 	if l.BudgetBytes <= 0 || l.BudgetBytes > 8<<30 || len(l.Volumes) < 2 || len(l.Volumes) > 8 || len(l.Slots) == 0 || len(l.Slots) > 128 || !filepath.IsAbs(root) || !filepath.IsAbs(l.Control) || within(root, l.Control) || within(l.Control, root) {
 		return errors.New("invalid storage registry")
 	}
