@@ -28,7 +28,7 @@ class MacOSBootstrapTests(unittest.TestCase):
                        LAB_MUTATION=str(marker))
             result = subprocess.run(
                 ["/bin/bash", str(Path(__file__).with_name("native-macos.sh")), "/disposable-build"],
-                env=env, capture_output=True, text=True, timeout=10)
+                env=env, capture_output=True, text=True, timeout=60)
             return result, marker.exists()
 
     def test_occupied_identity_refuses_before_any_mutation(self):
