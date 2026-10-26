@@ -7,7 +7,27 @@ case "$build_dir" in /*) ;; *) exit 2;; esac
 lab_root="/private/var/db/multica-cache-lab-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 lab_user="cachelabtask"
 lab_uid=490
-if dscl . -search /Users UniqueID "$lab_uid" | rg .; then exit 3; fi
+runtime_uid_base=60000
+require_unused_identity() {
+  local found
+  found="$(dscl . -search "$1" "$2" "$3")"
+  if [[ -n "$found" ]]; then
+    printf 'Identity already exists: %s %s %s\n' "$1" "$2" "$3" >&2
+    exit 5
+  fi
+}
+# Complete every directory query before creating anything. A failed query must
+# abort too; missing optional search tools must never bypass collision checks.
+require_unused_identity /Users UniqueID "$lab_uid"
+require_unused_identity /Users RecordName "$lab_user"
+for index in $(seq 0 383); do
+  runtime_uid=$((runtime_uid_base+index))
+  runtime_user="cachelabrun$index"
+  require_unused_identity /Users UniqueID "$runtime_uid"
+  require_unused_identity /Groups PrimaryGroupID "$runtime_uid"
+  require_unused_identity /Users RecordName "$runtime_user"
+  require_unused_identity /Groups RecordName "$runtime_user"
+done
 sudo dscl . -create "/Users/$lab_user"
 sudo dscl . -create "/Users/$lab_user" UniqueID "$lab_uid"
 sudo dscl . -create "/Users/$lab_user" PrimaryGroupID 20
@@ -18,10 +38,8 @@ sudo cp -X "$build_dir/producer" "$build_dir/broker-test" "$build_dir/broker-ser
 sudo chown -R root:wheel "$lab_root"
 sudo chmod 0755 "$lab_root/producer" "$lab_root/broker-test" "$lab_root/broker-service" "$lab_root/runtime-census"
 for index in $(seq 0 383); do
-  runtime_uid=$((600+index))
+  runtime_uid=$((runtime_uid_base+index))
   runtime_user="cachelabrun$index"
-  if dscl . -search /Users UniqueID "$runtime_uid" | rg .; then exit 5; fi
-  if dscl . -search /Groups PrimaryGroupID "$runtime_uid" | rg .; then exit 5; fi
   sudo dscl . -create "/Groups/$runtime_user"
   sudo dscl . -create "/Groups/$runtime_user" PrimaryGroupID "$runtime_uid"
   sudo dscl . -create "/Users/$runtime_user"
@@ -55,9 +73,10 @@ sudo cp -X "$build_dir/git-wrapper" "$producer_git"
 sudo chown root:wheel "$producer_git"
 sudo chmod 0755 "$producer_git"
 [[ "$("$producer_git" --exec-path)" == "$git_core" ]]
-python3 - "$lab_root" "$lab_uid" "$producer_git" > "$build_dir/native-config.json" <<'PYCONFIG'
+python3 - "$lab_root" "$lab_uid" "$producer_git" "$runtime_uid_base" > "$build_dir/native-config.json" <<'PYCONFIG'
 import json,sys
-print(json.dumps(dict(Root=sys.argv[1],Producer=sys.argv[1]+"/producer",Service=sys.argv[1]+"/broker-service",Census=sys.argv[1]+"/runtime-census",Git=sys.argv[3],UID=int(sys.argv[2]),GID=20,RuntimeIdentities=[dict(UID=600+i,GID=600+i) for i in range(384)])))
+base = int(sys.argv[4])
+print(json.dumps(dict(Root=sys.argv[1],Producer=sys.argv[1]+"/producer",Service=sys.argv[1]+"/broker-service",Census=sys.argv[1]+"/runtime-census",Git=sys.argv[3],UID=int(sys.argv[2]),GID=20,RuntimeIdentities=[dict(UID=base+i,GID=base+i) for i in range(384)])))
 PYCONFIG
 sudo cp "$build_dir/native-config.json" "$lab_root/config.json"
 sudo chown root:wheel "$lab_root/config.json"

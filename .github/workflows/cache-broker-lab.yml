@@ -40,7 +40,9 @@ jobs:
         run: python scripts/cache-broker-lab/build.py --output native-build
       - name: Native macOS identity and cycles
         if: runner.os == 'macOS'
-        run: bash scripts/cache-broker-lab/native-macos.sh "${{ github.workspace }}/native-build"
+        run: |
+          python3 scripts/cache-broker-lab/test_native_bootstrap.py
+          bash scripts/cache-broker-lab/native-macos.sh "${{ github.workspace }}/native-build"
       - name: Native Windows identity and cycles
         if: runner.os == 'Windows'
         shell: pwsh
