@@ -267,8 +267,10 @@ oversized files. A volume is detached at test teardown; its image and retained
 bytes expire with the disposable VM. There is no automatic eviction.
 
 On macOS, the inherited producer sandbox permits Git/helper execution, writes
-only under the exact staging directory, and networking only on loopback for the
-catalog fixture. External launch-service IPC remains denied. On Windows the
+stored data only under the exact staging directory, permits the `/dev/null` sink,
+and networking only on loopback for the catalog fixture. Bootstrap resolves the
+protected Git executable before sandbox entry, avoiding the Xcode discovery shim.
+External launch-service IPC remains denied. On Windows the
 ordinary token enters a private, noninherited, kill-on-close Job while suspended,
 then resumes. ACLs exclude other ordinary staging writers and all ordinary
 publication/control writers. As in the runtime fixture, a Windows Job does not

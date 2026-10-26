@@ -31,9 +31,12 @@ for index in $(seq 0 47); do
   sudo dscl . -create "/Users/$runtime_user" NFSHomeDirectory /var/empty
   sudo dscl . -create "/Users/$runtime_user" AuthenticationAuthority ';DisabledUser;'
 done
-python3 - "$lab_root" "$lab_uid" > "$build_dir/native-config.json" <<'PYCONFIG'
+# Resolve the protected Git executable before entering the producer sandbox;
+# /usr/bin/git is an xcode-select shim that can launch Xcode discovery helpers.
+producer_git="$(/usr/bin/xcrun --find git)"
+python3 - "$lab_root" "$lab_uid" "$producer_git" > "$build_dir/native-config.json" <<'PYCONFIG'
 import json,sys
-print(json.dumps(dict(Root=sys.argv[1],Producer=sys.argv[1]+"/producer",Service=sys.argv[1]+"/broker-service",Census=sys.argv[1]+"/runtime-census",Git="/usr/bin/git",UID=int(sys.argv[2]),GID=20,RuntimeIdentities=[dict(UID=600+i,GID=600+i) for i in range(48)])))
+print(json.dumps(dict(Root=sys.argv[1],Producer=sys.argv[1]+"/producer",Service=sys.argv[1]+"/broker-service",Census=sys.argv[1]+"/runtime-census",Git=sys.argv[3],UID=int(sys.argv[2]),GID=20,RuntimeIdentities=[dict(UID=600+i,GID=600+i) for i in range(48)])))
 PYCONFIG
 sudo cp "$build_dir/native-config.json" "$lab_root/config.json"
 sudo chown root:wheel "$lab_root/config.json"
@@ -41,6 +44,8 @@ sudo chmod 0600 "$lab_root/config.json"
 id "$lab_user" > "$build_dir/native-identity.log"
 sw_vers >> "$build_dir/native-identity.log"
 uname -a >> "$build_dir/native-identity.log"
+printf 'producer_git=%s\n' "$producer_git" >> "$build_dir/native-identity.log"
+shasum -a 256 "$producer_git" >> "$build_dir/native-identity.log"
 sudo -u "$lab_user" sudo -n true && exit 4
 set +e
 sudo env MULTICA_NATIVE_BROKER_CONFIG="$lab_root/config.json" "$lab_root/broker-test" -test.run '^TestBrokerNative' -test.v -test.timeout 25m > "$build_dir/native.log" 2>&1

@@ -73,7 +73,7 @@ func newNativeProducerDomain(t *testing.T, cfg nativeLab, c producerConfig) *nat
 		t.Fatal(err)
 	}
 	// Git's protected helpers may execute, but the inherited sandbox denies
-	// external launch IPC and permits writes only to this bounded acquisition.
+	// external launch IPC and confines stored output to this bounded acquisition.
 	profile := fmt.Sprintf(`(version 1)
 (deny default)
 (allow file-read*)
@@ -82,6 +82,7 @@ func newNativeProducerDomain(t *testing.T, cfg nativeLab, c producerConfig) *nat
 (allow process-exec)
 (allow signal (target same-sandbox))
 (allow file-write* (subpath %q))
+(allow file-write-data (literal "/dev/null"))
 (allow network-inbound (local ip "localhost:*"))
 (allow network-outbound (remote ip "localhost:*"))
 `, c.Stage)

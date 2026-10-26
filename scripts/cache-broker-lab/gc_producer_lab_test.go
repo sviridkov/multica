@@ -441,7 +441,7 @@ func (d *nativeProducerDomain) Start(cmd *exec.Cmd) error {
 		cmd.Env = append(cmd.Env, key+"="+d.config.Stage)
 	}
 	cmd.Path = d.exe
-	cmd.Args = []string{d.exe, "-test.run=^TestBrokerProducerWorker$"}
+	cmd.Args = []string{d.exe, "-test.run=^TestBrokerProducerWorker$", "-test.v"}
 	return d.inner.Start(cmd)
 }
 func (d *nativeProducerDomain) Active() (uint32, error) { return d.inner.Active() }
