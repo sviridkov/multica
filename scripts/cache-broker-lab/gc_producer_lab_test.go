@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -111,8 +112,7 @@ func (p *producerProcess) request(t *testing.T, operation string) producerReply 
 		t.Fatal(err)
 	}
 	path := filepath.Join(p.cfg.Control, fmt.Sprintf("reply-%d.json", p.sequence))
-	waitRuntimeFile(t, path)
-	data, err := os.ReadFile(path)
+	data, err := readProducerReplyFile(path, 30*time.Second, os.ReadFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +121,59 @@ func (p *producerProcess) request(t *testing.T, operation string) producerReply 
 		t.Fatal(err)
 	}
 	return r
+}
+
+func readProducerReplyFile(path string, timeout time.Duration, readFile func(string) ([]byte, error)) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		data, err := readFile(path)
+		if err == nil {
+			return data, nil
+		}
+		if !os.IsNotExist(err) && !nativeProducerReplySharingError(err) {
+			return nil, err
+		}
+		if !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("producer reply was not readable before deadline: %w", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestBrokerProducerReplyRead(t *testing.T) {
+	t.Run("publication-not-yet-visible", func(t *testing.T) {
+		calls := 0
+		data, err := readProducerReplyFile("reply", time.Second, func(string) ([]byte, error) {
+			calls++
+			if calls == 1 {
+				return nil, os.ErrNotExist
+			}
+			return []byte(`{"Error":""}`), nil
+		})
+		if err != nil || string(data) != `{"Error":""}` || calls != 2 {
+			t.Fatal("reply was not read after publication", string(data), err, calls)
+		}
+	})
+	t.Run("other-errors-are-immediate", func(t *testing.T) {
+		calls := 0
+		_, err := readProducerReplyFile("reply", time.Second, func(string) ([]byte, error) {
+			calls++
+			return nil, os.ErrPermission
+		})
+		if !errors.Is(err, os.ErrPermission) || calls != 1 {
+			t.Fatal("non-sharing error was suppressed", err, calls)
+		}
+	})
+	t.Run("expired-deadline-retains-error", func(t *testing.T) {
+		calls := 0
+		_, err := readProducerReplyFile("reply", 0, func(string) ([]byte, error) {
+			calls++
+			return nil, os.ErrNotExist
+		})
+		if !errors.Is(err, os.ErrNotExist) || calls != 1 {
+			t.Fatal("missing reply did not retain its failure", err, calls)
+		}
+	})
 }
 func (p *producerProcess) close(t *testing.T) {
 	t.Helper()
@@ -148,6 +201,7 @@ func producerPreserved(t *testing.T, root, stage, other string) {
 
 func TestBrokerNativeIsolatedProducerCycles(t *testing.T) {
 	cfg := mustLab(t)
+	nativeCheckProducerReplyRead(t)
 	for _, route := range []string{"direct", "walk"} {
 		for _, artifact := range []string{cachebrokerlab.Marketplaces, cachebrokerlab.Catalog} {
 			t.Run(route+"/"+artifact, func(t *testing.T) {

@@ -21,6 +21,10 @@ func nativeProducerQuotaError(err error) bool {
 	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT)
 }
 
+func nativeProducerReplySharingError(error) bool { return false }
+
+func nativeCheckProducerReplyRead(t *testing.T) { t.Helper() }
+
 func nativeStorageAvailable(t *testing.T, path string) int64 {
 	t.Helper()
 	var fs syscall.Statfs_t

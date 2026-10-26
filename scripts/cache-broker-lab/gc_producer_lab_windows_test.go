@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -18,6 +19,51 @@ import (
 
 func nativeProducerQuotaError(err error) bool {
 	return errors.Is(err, windows.ERROR_DISK_FULL) || errors.Is(err, windows.ERROR_HANDLE_DISK_FULL) || errors.Is(err, windows.ERROR_DISK_QUOTA_EXCEEDED)
+}
+
+func nativeProducerReplySharingError(err error) bool {
+	return errors.Is(err, windows.ERROR_SHARING_VIOLATION)
+}
+
+func nativeCheckProducerReplyRead(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "reply.json")
+	want := `{"Error":""}`
+	if err := os.WriteFile(path, []byte(want), 0600); err != nil {
+		t.Fatal(err)
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if handle != 0 {
+			windows.CloseHandle(handle)
+		}
+	})
+	calls := 0
+	data, err := readProducerReplyFile(path, 30*time.Second, func(path string) ([]byte, error) {
+		calls++
+		data, err := os.ReadFile(path)
+		if calls == 1 {
+			if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+				t.Fatalf("exclusive handle did not deny the initial read: %v", err)
+			}
+			if err := windows.CloseHandle(handle); err != nil {
+				t.Fatal(err)
+			}
+			handle = 0
+		}
+		return data, err
+	})
+	if err != nil || string(data) != want || calls < 2 {
+		t.Fatal("reply did not recover after releasing exclusive handle", string(data), err, calls)
+	}
+	t.Log("PRODUCER_REPLY_SHARING_RETRY initial_denied=true handle_released=true exact_reply=true")
 }
 
 func nativeStorageAvailable(t *testing.T, path string) int64 {

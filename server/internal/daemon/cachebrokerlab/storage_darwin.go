@@ -1,13 +1,13 @@
 package cachebrokerlab
 
 import (
-	"bytes"
-	"context"
 	"errors"
-	"os/exec"
+	"fmt"
 	"strings"
 	"syscall"
-	"time"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 func nativeStorageVolume(path string) (storageReading, error) {
@@ -31,8 +31,7 @@ func darwinStorageProbe(readUUID func(string) (string, error)) storageProbe {
 		if err := syscall.Statfs(path, &fs); err != nil {
 			return storageReading{}, err
 		}
-		// diskutil accepts a device or mount root, not a directory inside it.
-		// Resolve the actual containing filesystem, including nested mounts.
+		// Identify the containing filesystem, including nested mounts.
 		device := make([]byte, 0, len(fs.Mntfromname))
 		for _, c := range fs.Mntfromname {
 			if c == 0 {
@@ -47,7 +46,7 @@ func darwinStorageProbe(readUUID func(string) (string, error)) storageProbe {
 		identity, found := identities[key]
 		if !found {
 			var err error
-			identity, err = readUUID(key.device)
+			identity, err = readUUID(path)
 			if err != nil {
 				return storageReading{}, err
 			}
@@ -64,22 +63,25 @@ func darwinStorageProbe(readUUID func(string) (string, error)) storageProbe {
 	}
 }
 
-func nativeVolumeUUID(device string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	data, err := exec.CommandContext(ctx, "/usr/sbin/diskutil", "info", "-plist", device).Output()
+func nativeVolumeUUID(path string) (string, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, "/usr/bin/plutil", "-extract", "VolumeUUID", "raw", "-o", "-", "-")
-	cmd.Stdin = bytes.NewReader(data)
-	id, err := cmd.Output()
-	if err != nil {
-		return "", err
+	defer unix.Close(fd)
+	attrs := unix.Attrlist{Bitmapcount: unix.ATTR_BIT_MAP_COUNT, Volattr: unix.ATTR_VOL_INFO | unix.ATTR_VOL_UUID}
+	// fgetattrlist returns a packed uint32 length followed by uuid_t (16 bytes).
+	var result struct {
+		Length uint32
+		UUID   [16]byte
 	}
-	identity := strings.TrimSpace(string(id))
-	if len(identity) != 36 {
+	_, _, errno := syscall.Syscall6(unix.SYS_FGETATTRLIST, uintptr(fd), uintptr(unsafe.Pointer(&attrs)), uintptr(unsafe.Pointer(&result)), unsafe.Sizeof(result), 0, 0)
+	if errno != 0 {
+		return "", errno
+	}
+	if result.Length != uint32(unsafe.Sizeof(result)) || result.UUID == [16]byte{} {
 		return "", errors.New("missing persistent filesystem UUID")
 	}
-	return identity, nil
+	id := result.UUID
+	return fmt.Sprintf("%X-%X-%X-%X-%X", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), nil
 }

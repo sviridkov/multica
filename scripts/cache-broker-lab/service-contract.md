@@ -401,11 +401,20 @@ is implemented to obtain space. Exhausted installations require a separately
 reviewed operator recovery plan; supplying a different empty volume is refused.
 
 On macOS, one check resolves a filesystem UUID once per device/filesystem ID.
+The query uses `fgetattrlist(ATTR_VOL_UUID)` on a non-symlink descriptor, rejects
+missing/zero UUIDs and compares statfs identity/capacity before and after. It
+does not spawn diskutil or fall back to pathname/device inference on error.
 Every registered path still receives fresh statfs membership, capacity and free
 space readings; a nested mount gets its own UUID query. The UUID map is discarded
 when that check returns, so every subsequent mutation re-queries its volumes.
 Failed queries never establish cached authority. Windows uses its native APIs
 directly. No identity or available-space cache survives between operations.
+
+The disposable producer supervisor publishes reply files by rename. Its test
+client waits up to 30 seconds for a missing reply or a Windows sharing violation;
+all other read errors and malformed JSON still fail. A forced Windows exclusive
+handle probe confirms refusal while held and an exact reply after release. This
+retry applies only to test transport, not publication proof or native authority.
 
 Before invoking the privileged acquisition factory, the service commits a claim
 for the exact slot with home/run/lease binding. The returned plan must match that

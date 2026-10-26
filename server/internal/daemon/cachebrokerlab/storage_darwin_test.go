@@ -1,12 +1,55 @@
 package cachebrokerlab
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 )
+
+func TestNativeVolumeUUIDReadsDescendantMetadata(t *testing.T) {
+	root := t.TempDir()
+	got, err := nativeVolumeUUID(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(root, &fs); err != nil {
+		t.Fatal(err)
+	}
+	device := make([]byte, 0, len(fs.Mntfromname))
+	for _, c := range fs.Mntfromname {
+		if c == 0 {
+			break
+		}
+		device = append(device, byte(c))
+	}
+	info, err := exec.Command("/usr/sbin/diskutil", "info", "-plist", string(device)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/usr/bin/plutil", "-extract", "VolumeUUID", "raw", "-o", "-", "-")
+	cmd.Stdin = bytes.NewReader(info)
+	want, err := cmd.Output()
+	if err != nil || got != strings.TrimSpace(string(want)) {
+		t.Fatalf("native metadata differs from diskutil: got %q, want %q, error %v", got, want, err)
+	}
+	if _, err := nativeVolumeUUID(filepath.Join(root, "absent")); err == nil {
+		t.Fatal("missing path supplied a UUID")
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nativeVolumeUUID(link); err == nil {
+		t.Fatal("UUID query followed a symlink")
+	}
+}
 
 func TestNativeStorageProbeQueriesEachMountOncePerCheck(t *testing.T) {
 	root := t.TempDir()
