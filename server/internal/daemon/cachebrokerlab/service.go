@@ -26,7 +26,12 @@ type ServiceConfig struct {
 	ReadOnly           bool
 	Fault              func(string) error `json:"-"` // Disposable fault harness only.
 	RuntimeHomes       []WritableHome
+	Production         ProductionFactory `json:"-"`
 }
+
+// ProductionFactory is a privileged bootstrap capability. IPC callers select
+// neither a staging path nor a native identity. Release closes native handles.
+type ProductionFactory func(homeID, artifact string, binding RunBinding) (plan ProductionPlan, release func() error, err error)
 
 // Request deliberately has no paths, commands, timestamps or lifecycle flags.
 // End/reconcile are assertions from the authenticated daemon authority, after it
@@ -362,7 +367,7 @@ func (s *Service) Execute(ctx context.Context, req Request) Response {
 	}
 	var h *Home
 	if req.Operation == "register" {
-		if len(s.journal.Homes) >= maxRegisteredHomes || (s.config.RuntimeHomes != nil && len(s.journal.Homes) != 0) {
+		if len(s.journal.Homes) >= maxRegisteredHomes || ((s.config.RuntimeHomes != nil || s.config.Production != nil) && len(s.journal.Homes) != 0) {
 			return bad(errors.New("home or immutable identity allocation capacity reached"))
 		}
 		if req.RecipeID != s.config.RecipeID || req.HomeID != "" || req.Generation != 0 {
@@ -394,8 +399,20 @@ func (s *Service) Execute(ctx context.Context, req Request) Response {
 	resp.Home = cloneHome(h)
 	resp.Path = s.generationPath(h.ID, h.Current)
 	s.journal.Requests[req.RequestID] = completedRequest{Digest: digest, Response: cloneResponse(resp)}
+	if req.Operation == "prepare" && resp.Error == "" {
+		if err := s.hit("prepare.before-commit"); err != nil {
+			s.poisoned = true
+			return bad(err)
+		}
+	}
 	if err := s.persist(); err != nil {
 		return bad(err)
+	}
+	if req.Operation == "prepare" && resp.Error == "" {
+		if err := s.hit("prepare.after-commit"); err != nil {
+			s.poisoned = true
+			return bad(err)
+		}
 	}
 	if err := s.hit(req.Operation + ".response"); err != nil {
 		return bad(err)
@@ -468,6 +485,9 @@ func (s *Service) mutate(ctx context.Context, h *Home, req Request, resp *Respon
 		if g.Lifecycle != "active" || req.LeaseID != g.LeaseID || req.RunID != g.RunID || !exact(req.Artifact) || g.Artifacts[req.Artifact] != "" {
 			return errors.New("prepare requires new artifact and active use lease")
 		}
+		if s.config.Production == nil {
+			return errors.New("isolated acquisition is not provisioned")
+		}
 		g.Artifacts[req.Artifact] = "preparing"
 		if err := s.persist(); err != nil {
 			return err
@@ -481,7 +501,7 @@ func (s *Service) mutate(ctx context.Context, h *Home, req Request, resp *Respon
 			g.Artifacts[req.Artifact] = "quarantined"
 			return err
 		}
-		r, err := b.Materialize(ctx, req.Artifact)
+		r, err := s.acquire(ctx, b, h, g, req.Artifact)
 		err = errors.Join(err, b.Close())
 		if err != nil {
 			g.Artifacts[req.Artifact] = "quarantined"
@@ -527,6 +547,7 @@ func (s *Service) mutate(ctx context.Context, h *Home, req Request, resp *Respon
 func (s *Service) broker(h *Home, g *Generation) (*Broker, error) {
 	p := s.config.Recipe
 	p.Root, p.HomeID = s.generationPath(h.ID, g.ID), fmt.Sprintf("%s/%d", h.ID, g.ID)
+	p.Generation = g.ID
 	p.ArtifactTTLSeconds = s.config.ArtifactTTLSeconds
 	if s.config.RuntimeHomes != nil {
 		if g.ID == 0 || g.ID > uint64(len(s.config.RuntimeHomes)) {
@@ -542,6 +563,49 @@ func (s *Service) broker(h *Home, g *Generation) (*Broker, error) {
 		b.fault = s.hit
 	}
 	return b, err
+}
+
+func (s *Service) acquire(ctx context.Context, b *Broker, h *Home, g *Generation, artifact string) (receipt Receipt, err error) {
+	binding := RunBinding{RunID: g.RunID, LeaseID: g.LeaseID, Generation: g.ID}
+	plan, release, err := s.config.Production(h.ID, artifact, binding)
+	if release != nil {
+		defer func() {
+			err = errors.Join(err, release())
+			if err != nil {
+				receipt = Receipt{}
+			}
+		}()
+	}
+	if err != nil {
+		return Receipt{}, err
+	}
+	if release == nil || plan.Binding.RunID != binding.RunID || plan.Binding.LeaseID != binding.LeaseID || plan.Binding.Generation != binding.Generation {
+		return Receipt{}, errors.New("acquisition does not own this service run/lease/generation")
+	}
+	production, err := b.StartProduction(ctx, artifact, plan)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if err = production.Wait(); err != nil {
+		return Receipt{}, err
+	}
+	quiescence, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	for {
+		quiet, err := plan.Supervisor.Quiescent(plan.Binding)
+		if err != nil {
+			return Receipt{}, err
+		}
+		if quiet {
+			break
+		}
+		select {
+		case <-quiescence.Done():
+			return Receipt{}, fmt.Errorf("acquisition domain did not quiesce: %w", quiescence.Err())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	return production.Publish(ctx)
 }
 
 func cloneHome(h *Home) *Home {

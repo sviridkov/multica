@@ -33,6 +33,7 @@ type Policy struct {
 	ArtifactTTLSeconds                                     int64
 	Terminal, Active, LocalDirectory                       bool
 	RuntimeHome                                            *WritableHome
+	Generation                                             uint64 // Nonzero for a service-owned generation namespace.
 }
 
 // WritableHome names an administrator-installed native identity for the three

@@ -102,7 +102,7 @@ func (p ProductionPlan) verifyVolume(destination string) (volumeIdentity, error)
 
 // StartProduction reserves an unproven generation before launching the measured
 // producer under a distinct native identity. The final cache is never writable
-// by that identity. This experimental path does not change service prepare.
+// by that identity. Service prepare uses the same capability and publication.
 func (b *Broker) StartProduction(ctx context.Context, artifact string, plan ProductionPlan) (*Production, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -116,7 +116,14 @@ func (b *Broker) StartProduction(ctx context.Context, artifact string, plan Prod
 	if old.State != "" && old.State != "consumed" {
 		return nil, errors.New("unresolved production retained")
 	}
-	if plan.Binding.Generation != old.Generation+1 {
+	generation := old.Generation + 1
+	if b.policy.Generation != 0 {
+		generation = b.policy.Generation
+		if old.State != "" {
+			return nil, errors.New("service generation cannot repeat acquisition")
+		}
+	}
+	if plan.Binding.Generation != generation {
 		return nil, errors.New("producer generation mismatch")
 	}
 	if err := protectedPath(b.policy.Root); err != nil {
@@ -147,12 +154,15 @@ func (b *Broker) StartProduction(ctx context.Context, artifact string, plan Prod
 	if err != nil || len(retained) >= 16 {
 		return nil, errors.New("publication quarantine capacity reached")
 	}
-	r := Receipt{Schema: 1, HomeID: b.policy.HomeID, Artifact: artifact, ProducerSHA256: b.policy.ProducerSHA256, SourceOID: b.policy.SourceOID, Generation: old.Generation + 1, State: "unproven"}
+	r := Receipt{Schema: 1, HomeID: b.policy.HomeID, Artifact: artifact, ProducerSHA256: b.policy.ProducerSHA256, SourceOID: b.policy.SourceOID, Generation: generation, State: "unproven"}
 	if artifact == Catalog {
 		r.SourceOID = ""
 	}
 	b.records[artifact] = r
 	if err = b.persist(); err != nil {
+		return nil, err
+	}
+	if err = b.hit("production.intent"); err != nil {
 		return nil, err
 	}
 	kind := "catalog"
@@ -170,6 +180,9 @@ func (b *Broker) StartProduction(ctx context.Context, artifact string, plan Prod
 	p := &Production{supervisor: plan.Supervisor, binding: plan.Binding, broker: b, plan: plan, volume: volume, receipt: r, cmd: cmd}
 	if err = plan.Supervisor.Launch(plan.Binding, cmd, plan.Domain); err != nil {
 		return nil, err
+	}
+	if err = b.hit("production.running"); err != nil {
+		return nil, errors.Join(err, cmd.Process.Kill(), cmd.Wait())
 	}
 	return p, nil
 }
@@ -199,6 +212,9 @@ func (p *Production) Publish(ctx context.Context) (Receipt, error) {
 		return Receipt{}, err
 	}
 	if err := p.ready(); err != nil {
+		return Receipt{}, err
+	}
+	if err := b.hit("production.quiescent"); err != nil {
 		return Receipt{}, err
 	}
 	if b.lease == nil || !reflect.DeepEqual(b.records[p.receipt.Artifact], p.receipt) {
@@ -232,7 +248,7 @@ func (p *Production) Publish(ctx context.Context) (Receipt, error) {
 	if err = os.MkdirAll(parent, 0755); err != nil {
 		return Receipt{}, err
 	}
-	if err = protectedPath(parent); err != nil {
+	if err = protectedArtifactPath(parent, b.policy); err != nil {
 		return Receipt{}, err
 	}
 	// From here every attempt is one-shot: ambiguous copying, rename or journal
@@ -247,6 +263,9 @@ func (p *Production) Publish(ctx context.Context) (Receipt, error) {
 	if err = copyStage(ctx, source, dest, p.plan); err != nil {
 		return Receipt{}, err
 	}
+	if err = b.hit("publication.after-copy"); err != nil {
+		return Receipt{}, err
+	}
 	if err = publishReadable(dest); err != nil {
 		return Receipt{}, err
 	}
@@ -256,14 +275,23 @@ func (p *Production) Publish(ctx context.Context) (Receipt, error) {
 	if err = renameNewTree(dest, filepath.Join(b.policy.Root, filepath.FromSlash(r.Artifact))); err != nil {
 		return Receipt{}, err
 	}
+	if err = b.hit("publication.after-rename"); err != nil {
+		return Receipt{}, err
+	}
 	r.Entries, err = inventory(filepath.Join(b.policy.Root, filepath.FromSlash(r.Artifact)))
 	if err != nil {
 		return Receipt{}, err
 	}
 	r.State = "committed"
+	if err = b.hit("publication.before-commit"); err != nil {
+		return Receipt{}, err
+	}
 	b.records[r.Artifact] = r
 	if err = b.persist(); err != nil {
 		b.records[r.Artifact] = p.receipt
+		return Receipt{}, err
+	}
+	if err = b.hit("publication.after-commit"); err != nil {
 		return Receipt{}, err
 	}
 	return cloneReceipt(r), nil

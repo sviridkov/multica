@@ -32,6 +32,14 @@ conservative recovery reject stale operations and retain uncertain remnants.
 See [the service contract](service-contract.md) for exact authority and recovery
 rules, including the remaining production requirements.
 
+Service preparation now uses a fresh ordinary producer on a fixed staging volume,
+with no privileged producer fallback. Its service run/lease/generation binds the
+native supervisor and protected receipt. The native suite checks copy, rename,
+receipt and registry crash/IO boundaries across both artifacts/routes and two
+generations, preserving partial publications in quarantine. Runtime fixtures use
+this same staged preparation path. The finite disposable identity pool is sized
+for the matrix; identities are never reused within a run.
+
 `codex.patch` applies to source 83086188ae0614bd882818ff1aa23f3194962012.
 The patch makes cache write success observable and adds an explicitly gated test
 entry point. Marketplace tests execute actual Git clone/install and await restore

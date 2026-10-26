@@ -29,6 +29,13 @@ type serviceLab struct {
 	client                *cachebrokerlab.Client
 	sequence              int
 	home                  *cachebrokerlab.Home
+	stages                []serviceAcquisitionSlot
+}
+
+type serviceAcquisitionSlot struct {
+	Generation              uint64
+	Artifact, Stage, Volume string
+	Identity                runtimeIdentity
 }
 
 func newServiceLab(t *testing.T, options ...func(*cachebrokerlab.ServiceConfig)) *serviceLab {
@@ -53,10 +60,19 @@ func newServiceLab(t *testing.T, options ...func(*cachebrokerlab.ServiceConfig))
 	for _, option := range options {
 		option(&serviceConfig)
 	}
+	volume := nativeProducerVolume(t, cfg)
+	for generation := uint64(1); generation <= 2; generation++ {
+		for _, artifact := range []string{cachebrokerlab.Marketplaces, cachebrokerlab.Catalog} {
+			id := allocateRuntimeIdentity(t, cfg)
+			s.stages = append(s.stages, serviceAcquisitionSlot{Generation: generation, Artifact: artifact, Stage: nativeProducerStage(t, volume, id), Volume: volume, Identity: id})
+		}
+	}
 	data, _ := json.Marshal(struct {
-		Service cachebrokerlab.ServiceConfig
-		Control string
-	}{serviceConfig, s.control})
+		Service      cachebrokerlab.ServiceConfig
+		Control      string
+		Census       string
+		Acquisitions []serviceAcquisitionSlot
+	}{serviceConfig, s.control, cfg.Census, s.stages})
 	if err := os.WriteFile(filepath.Join(s.control, "config.json"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +160,29 @@ func (s *serviceLab) begin(t *testing.T, intent string) string {
 func (s *serviceLab) prepare(t *testing.T, artifact string) cachebrokerlab.Response {
 	r := s.request("prepare")
 	r.Artifact = artifact
-	return s.call(t, r)
+	resp := s.call(t, r)
+	if resp.Receipt == nil || resp.Receipt.Generation != s.home.Current {
+		t.Fatal("acquisition receipt does not bind the service generation")
+	}
+	s.verifyAcquisitionIdentity(t, s.home.Current, artifact)
+	return resp
+}
+
+func (s *serviceLab) verifyAcquisitionIdentity(t *testing.T, generation uint64, artifact string) {
+	t.Helper()
+	for _, slot := range s.stages {
+		if slot.Generation != generation || slot.Artifact != artifact {
+			continue
+		}
+		identity := nativeRuntimeIdentity(slot.Identity)
+		log, err := os.ReadFile(filepath.Join(s.control, "service.log"))
+		if err != nil || !strings.Contains(string(log), "SERVICE_PRODUCER ordinary=true identity="+identity+"\n") {
+			t.Fatal("service did not execute acquisition under its provisioned ordinary identity", identity, err)
+		}
+		t.Logf("STAGED_SERVICE_IDENTITY identity=%s generation=%d artifact=%s", identity, generation, artifact)
+		return
+	}
+	t.Fatal("missing acquisition identity")
 }
 func (s *serviceLab) end(t *testing.T) {
 	s.call(t, s.request("end"))
@@ -420,7 +458,7 @@ func TestBrokerNativeServiceRestartAndUnknown(t *testing.T) {
 }
 
 func TestBrokerNativeServiceFaults(t *testing.T) {
-	points := []string{"begin.intent", "begin.namespace", "prepare.intent", "producer.intent", "producer.running", "producer.exited", "producer.inventory", "producer.committed", "prepare.response", "reclaim.intent", "reclaim.consumed", "unlink.before", "unlink.after", "unlink.after-third", "reclaim.absent", "reclaim.response"}
+	points := []string{"begin.intent", "begin.namespace", "prepare.intent", "production.intent", "production.running", "production.quiescent", "publication.before-commit", "publication.after-commit", "prepare.response", "reclaim.intent", "reclaim.consumed", "unlink.before", "unlink.after", "unlink.after-third", "reclaim.absent", "reclaim.response"}
 	for _, point := range points {
 		t.Run(point, func(t *testing.T) {
 			s := newServiceLab(t)

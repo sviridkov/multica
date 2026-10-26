@@ -47,9 +47,12 @@ with tasks cannot safely own that credential merely by changing file modes.
 1. `register(recipeID, requestID)` commits a fresh logical home and request result.
 2. `begin(homeID, revision, runID, launch|restore)` durably reserves a use lease
    before namespace creation, producer execution, task launch or discovery.
-3. `prepare(leaseID, runID, artifact)` persists PREPARING, runs only the measured
-   recipe, validates publication/readback and commits READY. Restore precedes
-   discovery. The native driver starts an ordinary reader only after this returns.
+3. `prepare(leaseID, runID, artifact)` requires bootstrap-provisioned staged
+   acquisition and persists PREPARING. A fresh ordinary producer executes the
+   measured recipe on its bounded volume. Successful leader exit and sealed
+   whole-domain quiescence precede bounded copy, no-replace publication, protected
+   receipt commit and finally READY plus the request outcome. Restore precedes
+   discovery; the native driver starts an ordinary reader only after this returns.
 4. The trusted daemon supervises its run's complete process tree. Only after
    observing quiescence may it call `end(leaseID, runID)`. The service records its
    own terminal timestamp; the client cannot choose an idle age. Disconnect,
@@ -119,8 +122,8 @@ binary, protected installation/control paths, every ancestor ACL, the trusted
 daemon's exclusive credential provisioning, revocation/rotation, IPC policy and
 the task process identity. It must define a writable Codex home layout compatible
 with all ordinary Codex writes while protecting both cache parents. Making an
-entire home read-only is not that integration. It must also reduce producer
-privileges, enforce complete launch/restore/termination supervision, bound retained
+entire home read-only is not that integration. It must preserve least-privilege producer acquisition,
+enforce complete launch/restore/termination supervision, bound retained
 quarantine and request journals, and specify cleanup authority for preserved data.
 
 Upgrade must stop new reservations, drain or explicitly retain active leases,
@@ -225,10 +228,8 @@ a verified archive of outcomes/evidence and a new namespace/epoch; no expiry may
 turn an active/unknown lease into terminal. Expired uncertain data is an operator
 obligation, not deletion permission.
 
-The existing service `prepare` and earlier test paths still run the producer
-privileged. The separate staged acquisition path below implements a measured
-recipe under a
-fresh producer identity and the same closed native containment, with access only
+Service `prepare` uses the staged acquisition path below with a measured
+recipe under a fresh producer identity and the same closed native containment, with access only
 to protected read-only source, recipe, approved network fixture and bounded
 staging. It cannot read service/driver credentials or write publication/journals.
 Before publication, seal launch authority and prove the entire producer domain
@@ -238,15 +239,15 @@ bytes into a new privileged-owned namespace with mutation rights revoked, then
 inventory that immutable publication and commit its receipt. Never treat producer
 Wait alone as proof or adopt output after uncertain termination. A malicious or
 compromised pinned producer remains outside this experiment's proven boundary.
-The staged path below is not yet connected to service `prepare`. That integration,
-production retention limits and Windows IPC controls still require review before
-any working Desktop deployment proposal.
+The direct historical `Broker.Materialize` tests remain a separate privileged
+control path; the service never falls back to them. Production retention limits
+and Windows IPC controls still require review before any working deployment.
 
 
 ## Isolated staged acquisition and supervisor-process crash
 
-`Broker.StartProduction` and its live `Production` capability are a separate
-experimental acquisition path. A fresh ordinary producer UID/SID runs the pinned
+`Broker.StartProduction` and its live `Production` capability implement the
+experimental service acquisition path as well as the direct producer probes. A fresh ordinary producer UID/SID runs the pinned
 Rust acquisition/restore implementation in an empty staging directory. The
 privileged supervisor durably binds run/lease/generation/identity before launch;
 its identity cannot be reused. The native test trampoline adds controlled
@@ -309,11 +310,60 @@ native proof, replay launch or adopt the stale broker lease, and no receipt is
 committed. Manual recovery of that retained lease/stage is deliberately unresolved.
 This tests process death, not machine/power loss.
 
-The service `prepare` path, runtime adapter, production GC and installed Desktop
-are unchanged by this step. Combining the staged acquisition with the service's
-lease/recovery state machine, real external source/auth and installed Codex home
-compatibility remains required. Aggregate publication/retention quotas, image
+Service `prepare` and its runtime-adapter fixtures now use staged acquisition.
+Production GC and installed Desktop remain unchanged. Real external source/auth
+and installed Codex home compatibility remain unverified. Aggregate publication/retention quotas, image
 lifecycle in a real deployment, signed executable identity, credential rotation,
 Windows external IPC isolation and installer/update/rollback remain separate
 production obligations. None of these test results authorizes merge, installation
 or live cleanup of user environments.
+
+## Staged acquisition in the native service
+
+The protected bootstrap supplies a finite generation/artifact slot table with
+fresh ordinary identities and empty stages on fixed 128 MiB volumes. One service
+home owns that table. No IPC field selects an identity, path, executable or quota.
+`ServiceConfig.Production` is an in-process bootstrap factory excluded from JSON
+requests; a missing factory refuses preparation before any intent. The native
+service command supplies the factory, with no privileged-producer fallback.
+
+The service binds each acquisition to its current run, lease and generation.
+Receipts carry the service generation, even though each generation has a new
+broker namespace. Its supervisor reserves the binding durably before launch. The
+ordinary launcher creates only its staging prerequisites, then starts the pinned
+producer in the same inherited native domain. Source evidence is copied into the
+protected receipt outside the task cache. A bounded wait may observe native
+quiescence, but timeout/error never counts as proof; Publish queries again.
+
+The bootstrap provides two generations for each artifact per test installation.
+A restarted service cannot reuse a used slot: PREPARING becomes QUARANTINED, its
+native proof is lost, and old epoch/revision requests cannot launch it again. A
+new generation uses different stage and identity. Supervisor journals, failed
+stages, broker leases left by process death and partial publications stay intact.
+A completed READY result survives a lost response, but its current lifecycle is
+UNKNOWN until the independent trusted runtime authority reconciles it.
+
+The publication fault matrix covers both GC routes, both artifacts and both
+generations, with real service exit and injected IO error at each boundary:
+
+| Boundary | Durable receipt | Service recovery |
+| --- | --- | --- |
+| After bounded copy | UNPROVEN; protected partial tree remains | QUARANTINED |
+| After no-replace rename | UNPROVEN; final tree remains | QUARANTINED |
+| Before receipt commit | UNPROVEN; final tree remains | QUARANTINED |
+| After receipt commit | COMMITTED; final tree remains | QUARANTINED |
+| Before final service registry commit | COMMITTED; final tree remains | QUARANTINED |
+| After final service registry commit | COMMITTED with committed request outcome | READY, lifecycle UNKNOWN |
+
+Tests verify that the requested fault actually fired after producer completion,
+check receipt and service states separately, query the outcome, refuse old
+requests/replay, and invoke both daemon GC routes. Unknown lifecycle grants zero
+credit. Quarantine remains excluded even after trusted reconciliation; a fully
+committed outcome can be reclaimed after reconciliation and idle TTL. Snapshots
+cover staging, partial/final publications, unknown content in the other exact
+cache and task results through restart and replacement. Existing native service
+cycles, fault/IO tests and runtime cycles also execute this staged prepare path.
+
+These are process-crash/IO results on disposable machines. They do not establish
+power-loss ordering, generic Windows IPC containment, publication/retention/log
+volume limits, installed Codex compatibility or production deployment authority.

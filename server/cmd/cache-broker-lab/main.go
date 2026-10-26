@@ -17,14 +17,24 @@ import (
 )
 
 type config struct {
-	Service cachebrokerlab.ServiceConfig
-	Control string
+	Service      cachebrokerlab.ServiceConfig
+	Control      string
+	Census       string
+	Acquisitions []acquisitionSlot
 }
 
 func main() {
 	path := flag.String("config", "", "protected bootstrap file")
 	name := flag.String("name", "", "native service name")
+	acquire := flag.String("acquire", "", "measured producer in an ordinary native domain")
 	flag.Parse()
+	if *acquire != "" {
+		if err := runAcquisition(*acquire); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := nativeRun(*name, func(ctx context.Context) error { return run(ctx, *path) }); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -94,6 +104,7 @@ func run(ctx context.Context, path string) error {
 		}
 		return fmt.Errorf("injected IO failure at %s", point)
 	}
+	cfg.Service.Production = acquisitionFactory(cfg)
 	s, err := cachebrokerlab.OpenService(cfg.Service)
 	if err != nil {
 		return err

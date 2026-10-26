@@ -3,6 +3,7 @@ package cachebrokerlab
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,6 +27,58 @@ func serviceCall(t *testing.T, s *Service, req Request) Response {
 		t.Fatal(resp.Error)
 	}
 	return resp
+}
+
+func TestServicePrepareWithoutStagingDoesNotReserveOrLaunch(t *testing.T) {
+	s := serviceFixture(t, t.TempDir())
+	h := serviceCall(t, s, Request{Operation: "register", RequestID: "r", RecipeID: "pinned-fixture"}).Home
+	h = serviceCall(t, s, Request{Operation: "begin", RequestID: "b", HomeID: h.ID, Revision: h.Revision, RunID: "run", Intent: "launch"}).Home
+	g := h.Generations[h.Current]
+	resp := s.Execute(context.Background(), Request{Operation: "prepare", RequestID: "p", Epoch: s.epoch, HomeID: h.ID, Revision: h.Revision, Generation: h.Current, RunID: g.RunID, LeaseID: g.LeaseID, Artifact: Catalog})
+	if resp.Error == "" || resp.Receipt != nil {
+		t.Fatal("service accepted preparation without isolated acquisition")
+	}
+	current := serviceCall(t, s, Request{Operation: "query", HomeID: h.ID}).Home
+	if len(current.Generations[1].Artifacts) != 0 || current.Revision != h.Revision {
+		t.Fatal("unconfigured staging reached the producer intent")
+	}
+}
+
+func TestServiceAcquisitionRejectsForeignBindingBeforeLaunch(t *testing.T) {
+	for _, change := range []string{"run", "lease", "generation"} {
+		t.Run(change, func(t *testing.T) {
+			s := serviceFixture(t, t.TempDir())
+			released := false
+			s.config.Production = func(_ string, _ string, binding RunBinding) (ProductionPlan, func() error, error) {
+				switch change {
+				case "run":
+					binding.RunID = "foreign"
+				case "lease":
+					binding.LeaseID = "foreign"
+				case "generation":
+					binding.Generation++
+				}
+				return ProductionPlan{Binding: binding}, func() error { released = true; return nil }, nil
+			}
+			// No broker exists: accepting the foreign binding would reach launch.
+			r, err := s.acquire(context.Background(), nil, &Home{ID: "home"}, &Generation{ID: 2, RunID: "run", LeaseID: "lease"}, Catalog)
+			if err == nil || r.State != "" || !released {
+				t.Fatal("foreign acquisition accepted or retained native handles", err)
+			}
+		})
+	}
+}
+
+func TestServiceAcquisitionReportsProvisioningAndReleaseFailure(t *testing.T) {
+	s := serviceFixture(t, t.TempDir())
+	provision, release := errors.New("native identity unavailable"), errors.New("native handle close failed")
+	s.config.Production = func(string, string, RunBinding) (ProductionPlan, func() error, error) {
+		return ProductionPlan{}, func() error { return release }, provision
+	}
+	r, err := s.acquire(context.Background(), nil, &Home{}, &Generation{ID: 1}, Catalog)
+	if !errors.Is(err, provision) || !errors.Is(err, release) || r.State != "" {
+		t.Fatal("acquisition failure was hidden", err)
+	}
 }
 
 func TestServiceRegistrationIsDurableAndNeverAdoptsUnknownHomes(t *testing.T) {
