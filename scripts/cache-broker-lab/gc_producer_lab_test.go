@@ -332,7 +332,12 @@ func TestBrokerProducerSupervisor(t *testing.T) {
 	if err = p.Wait(); err != nil {
 		state = "producer failed: " + err.Error()
 	}
-	labWrite(t, filepath.Join(c.Control, "leader-finished"), state)
+	// Readers wait for this pathname, so publish it only after writing the state.
+	finished := filepath.Join(c.Control, "leader-finished")
+	labWrite(t, finished+".tmp", state)
+	if err := os.Rename(finished+".tmp", finished); err != nil {
+		t.Fatal(err)
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	i := 0
 	for scanner.Scan() {
