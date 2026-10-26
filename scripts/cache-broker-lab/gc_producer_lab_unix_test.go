@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -37,9 +39,30 @@ func nativeProducerVolume(t *testing.T, cfg nativeLab) string {
 	if err = os.Mkdir(mount, 0755); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"create", "-size", "128m", "-fs", "APFS", "-type", "UDIF", "-nospotlight", "-volname", "CacheProducerStage", image}, {"attach", "-nobrowse", "-owners", "on", "-mountpoint", mount, image}} {
-		if out, err := exec.Command("/usr/bin/hdiutil", args...).CombinedOutput(); err != nil {
-			t.Fatalf("bounded staging volume: %v %s", err, out)
+	volumeDevice := ""
+	for _, args := range [][]string{{"create", "-size", "128m", "-fs", "APFS", "-type", "UDIF", "-nospotlight", "-volname", "CacheProducerStage", image}, {"attach", "-plist", "-nobrowse", "-owners", "on", "-mountpoint", mount, image}} {
+		command := exec.Command("/usr/bin/hdiutil", args...)
+		var diagnostics bytes.Buffer
+		command.Stderr = &diagnostics
+		out, err := command.Output()
+		if err != nil {
+			t.Fatalf("bounded staging volume: %v %s %s", err, out, diagnostics.String())
+		}
+		if diagnostics.Len() != 0 {
+			t.Logf("hdiutil %s: %s", args[0], diagnostics.String())
+		}
+		if args[0] == "attach" {
+			extract := exec.Command("/usr/bin/plutil", "-extract", "system-entities.0.dev-entry", "raw", "-o", "-", "-")
+			extract.Stdin = bytes.NewReader(out)
+			device, err := extract.CombinedOutput()
+			if err != nil {
+				t.Fatalf("attached image device: %v %s", err, device)
+			}
+			volumeDevice = strings.TrimSpace(string(device))
+			number, err := strconv.ParseUint(strings.TrimPrefix(volumeDevice, "/dev/disk"), 10, 32)
+			if err != nil || number == 0 || volumeDevice != fmt.Sprintf("/dev/disk%d", number) {
+				t.Fatal("unexpected attached image device", volumeDevice)
+			}
 		}
 	}
 	if err = os.Chown(mount, 0, 0); err != nil {
@@ -52,7 +75,9 @@ func nativeProducerVolume(t *testing.T, cfg nativeLab) string {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		for attempt := 1; ; attempt++ {
-			out, err := exec.CommandContext(ctx, "/usr/bin/hdiutil", "detach", mount).CombinedOutput()
+			// Detach can unmount first, then fail to eject with EBUSY. Keep the
+			// original image device; its mount path no longer names the device.
+			out, err := exec.CommandContext(ctx, "/usr/bin/hdiutil", "detach", volumeDevice).CombinedOutput()
 			if err == nil {
 				if attempt > 1 {
 					t.Logf("QUOTA_DETACH settled_after_attempts=%d forced=false image_retained=true", attempt)
@@ -75,7 +100,7 @@ func nativeProducerVolume(t *testing.T, cfg nativeLab) string {
 			}
 		}
 	})
-	t.Log("STAGING_QUOTA filesystem=APFS fixed_image_bytes=134217728 task_results_separate=true")
+	t.Logf("STAGING_QUOTA filesystem=APFS device=%s fixed_image_bytes=134217728 task_results_separate=true", volumeDevice)
 	return mount
 }
 func nativeProducerStage(t *testing.T, volume string, id runtimeIdentity) string {
