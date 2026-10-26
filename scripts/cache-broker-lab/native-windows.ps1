@@ -17,7 +17,7 @@ if ($LASTEXITCODE -ne 0) { throw 'ACL bootstrap failed' }
 Copy-Item "$BuildDir\producer.exe", "$BuildDir\broker-test.exe", "$BuildDir\broker-service.exe" $labRoot
 $gitPath = (Get-Command git.exe).Source
 $runtimeIdentities = @()
-for ($index=0; $index -lt 16; $index++) {
+for ($index=0; $index -lt 48; $index++) {
   $runtimeUser = "cachelabrun$index"
   $runtimePassword = [guid]::NewGuid().ToString() + 'aA!7'
   $account = New-LocalUser -Name $runtimeUser -Password (ConvertTo-SecureString $runtimePassword -AsPlainText -Force) -AccountNeverExpires
@@ -32,7 +32,7 @@ $runner = @"
 `$nativeExit = 97
 `$env:MULTICA_NATIVE_BROKER_CONFIG='$labRoot\config.json'
 try {
-  & '$labRoot\broker-test.exe' '-test.run=^TestBrokerNative' '-test.v' '-test.timeout=15m' *> '$labRoot\native.log'
+  & '$labRoot\broker-test.exe' '-test.run=^TestBrokerNative' '-test.v' '-test.timeout=25m' *> '$labRoot\native.log'
   if (`$null -eq `$LASTEXITCODE) { throw 'Test process supplied no exit code' }
   `$nativeExit = `$LASTEXITCODE
 } catch {
@@ -48,7 +48,7 @@ Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumbe
 $taskName = "MulticaCacheLab-$env:GITHUB_RUN_ID"
 Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal | Out-Null
 Start-ScheduledTask -TaskName $taskName
-$deadline = (Get-Date).AddMinutes(17)
+$deadline = (Get-Date).AddMinutes(27)
 while (!(Test-Path "$labRoot\exit-code.txt")) {
  if ((Get-Date) -gt $deadline) { throw 'Native helper did not finish' }
  Start-Sleep -Seconds 2

@@ -199,7 +199,7 @@ double-forked descendant still reads the cache, starts a recovery driver, restar
 the cache service and checks zero deletion/credit. Only a successful native query
 after the fixture child exits allows end/reconcile, a new idle period and GC.
 
-## Capacity and producer privilege plan
+## Service capacity and remaining production storage plan
 
 Implemented admission bounds per experimental service namespace are 64 homes,
 64 generations per home, 1,024 retained request outcomes and a 4 MiB registry on
@@ -225,8 +225,9 @@ a verified archive of outcomes/evidence and a new namespace/epoch; no expiry may
 turn an active/unknown lease into terminal. Expired uncertain data is an operator
 obligation, not deletion permission.
 
-The producer still runs privileged in this lab; lowering it is a remaining
-implementation step. The proposed boundary runs the measured recipe under a
+The existing service `prepare` and earlier test paths still run the producer
+privileged. The separate staged acquisition path below implements a measured
+recipe under a
 fresh producer identity and the same closed native containment, with access only
 to protected read-only source, recipe, approved network fixture and bounded
 staging. It cannot read service/driver credentials or write publication/journals.
@@ -237,5 +238,73 @@ bytes into a new privileged-owned namespace with mutation rights revoked, then
 inventory that immutable publication and commit its receipt. Never treat producer
 Wait alone as proof or adopt output after uncertain termination. A malicious or
 compromised pinned producer remains outside this experiment's proven boundary.
-This plan and the missing disk/producer/Windows IPC controls must be implemented
-and reviewed before any working Desktop deployment proposal.
+The staged path below is not yet connected to service `prepare`. That integration,
+production retention limits and Windows IPC controls still require review before
+any working Desktop deployment proposal.
+
+
+## Isolated staged acquisition and supervisor-process crash
+
+`Broker.StartProduction` and its live `Production` capability are a separate
+experimental acquisition path. A fresh ordinary producer UID/SID runs the pinned
+Rust acquisition/restore implementation in an empty staging directory. The
+privileged supervisor durably binds run/lease/generation/identity before launch;
+its identity cannot be reused. The native test trampoline adds controlled
+failure and detached-writer probes around the measured producer. The trampoline,
+producer and native census are recorded in build provenance. No service/driver
+credential is supplied to the ordinary process.
+
+macOS staging uses a 128 MiB fixed APFS disk image; Windows uses a 128 MiB fixed
+NTFS VHD. The image is provisioned only in a disposable hosted VM. The importer
+queries native filesystem identity and capacity before launch and publication,
+requires a different filesystem from task results/publication, and refuses a
+changed, unbounded or incorrectly located stage. All successful and failed
+stages on that volume remain present and consume its finite aggregate capacity.
+Native tests actually write until the OS returns capacity exhaustion; an ordinary
+successful process exit or a configured byte limit is not that proof. Each stage
+also has an 8 MiB logical-byte and 2,048-entry import limit, which rejects sparse
+oversized files. A volume is detached at test teardown; its image and retained
+bytes expire with the disposable VM. There is no automatic eviction.
+
+On macOS, the inherited producer sandbox permits Git/helper execution, writes
+only under the exact staging directory, and networking only on loopback for the
+catalog fixture. External launch-service IPC remains denied. On Windows the
+ordinary token enters a private, noninherited, kill-on-close Job while suspended,
+then resumes. ACLs exclude other ordinary staging writers and all ordinary
+publication/control writers. As in the runtime fixture, a Windows Job does not
+confine arbitrary delegation to external process brokers. The pinned, measured
+producer is trusted not to perform such delegation; generic confinement remains
+unproven.
+
+Publication requires a successful leader exit AND native quiescence of its whole
+sealed domain. A live detached writer, failed query, recovered journal, partial
+acquisition evidence or exceeded physical/logical capacity cannot mint a receipt.
+The importer rejects nonregular entries, links, foreign owners/writers, unsupported
+native metadata and incomplete/wrong source evidence. It copies bounded bytes
+through `os.Root` into a new privileged tree, never changes source ownership, and
+publishes with native no-replace rename. Unknown destination instances survive.
+Only the immutable-to-ordinary-identities publication is inventoried for GC;
+staging and task outputs are never GC targets. Copy/rename/journal uncertainty
+retains an unproven intent and partial publication. Sixteen retained partial
+publication roots stop admission; this is a count limit, not an aggregate
+publication filesystem quota.
+
+The native suite verifies two artifacts, two GC routes and two generations, with
+a live detached writer denying each initial publication. The incomplete-evidence,
+symlink/hardlink, logical-capacity and physical-capacity matrix preserves unknown staging bytes,
+task results and the other exact cache. A separate four-case matrix kills the
+actual supervisor process after leader exit while its descendant is active.
+macOS demonstrates the orphan survives and must be preserved; Windows demonstrates
+Job closure terminates it. In both cases a new supervisor process cannot recover
+native proof, replay launch or adopt the stale broker lease, and no receipt is
+committed. Manual recovery of that retained lease/stage is deliberately unresolved.
+This tests process death, not machine/power loss.
+
+The service `prepare` path, runtime adapter, production GC and installed Desktop
+are unchanged by this step. Combining the staged acquisition with the service's
+lease/recovery state machine, real external source/auth and installed Codex home
+compatibility remains required. Aggregate publication/retention quotas, image
+lifecycle in a real deployment, signed executable identity, credential rotation,
+Windows external IPC isolation and installer/update/rollback remain separate
+production obligations. None of these test results authorizes merge, installation
+or live cleanup of user environments.
