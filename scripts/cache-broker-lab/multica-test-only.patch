@@ -1,0 +1,48 @@
+--- a/server/internal/daemon/gc.go
++++ b/server/internal/daemon/gc.go
+@@ -972,6 +972,10 @@
+ }
+ 
+ func (d *Daemon) cleanManagedTaskArtifactsWithRemoval(ctx context.Context, taskDir string, remove func(rel, dir string) error) (removed int, bytes int64, perPattern map[string]int) {
++ return d.cleanManagedTaskArtifactsWithBroker(ctx, taskDir, remove, nil)
++}
++
++func (d *Daemon) cleanManagedTaskArtifactsWithBroker(ctx context.Context, taskDir string, remove func(rel, dir string) error, reclaim labReclaimer) (removed int, bytes int64, perPattern map[string]int) {
+ 	perPattern = map[string]int{}
+ 	if taskDir == "" {
+ 		return
+@@ -989,6 +993,11 @@
+ 		if !ok {
+ 			continue
+ 		}
++        if reclaim != nil && (filepath.ToSlash(rel) == execenv.CodexMarketplacesArtifact || filepath.ToSlash(rel) == execenv.CodexRemotePluginCatalogArtifact) {
++            result, err := reclaim(ctx, filepath.ToSlash(rel))
++            if err == nil && result.Removed { removed++; bytes += result.Bytes; perPattern[managedArtifactPatternPrefix+filepath.ToSlash(rel)]++ }
++            continue
++        }
+ 		if reason := managedArtifactKeepReason(ctx, rel, target); reason != "" {
+ 			d.logger.Info("gc: managed artifact retained", "path", target, "reason", reason, "retained_bytes", dirSize(target))
+ 			continue
+@@ -1068,6 +1077,10 @@
+ }
+ 
+ func (d *Daemon) cleanTaskArtifactsMatchingWithRemoval(ctx context.Context, taskDir string, matcher artifactMatcher, remove func(rel, dir string) error) (removed int, bytes int64, perPattern map[string]int) {
++ return d.cleanTaskArtifactsMatchingWithBroker(ctx, taskDir, matcher, remove, nil)
++}
++
++func (d *Daemon) cleanTaskArtifactsMatchingWithBroker(ctx context.Context, taskDir string, matcher artifactMatcher, remove func(rel, dir string) error, reclaim labReclaimer) (removed int, bytes int64, perPattern map[string]int) {
+ 	perPattern = map[string]int{}
+ 	if taskDir == "" || (len(matcher.basenames) == 0 && len(matcher.exactPaths) == 0) {
+ 		return
+@@ -1114,6 +1127,11 @@
+ 			return relErr
+ 		}
+ 		_, managed := matcher.exactPaths[rel]
++        if managed && reclaim != nil && (filepath.ToSlash(rel) == execenv.CodexMarketplacesArtifact || filepath.ToSlash(rel) == execenv.CodexRemotePluginCatalogArtifact) {
++            result, err := reclaim(ctx, filepath.ToSlash(rel))
++            if err == nil && result.Removed { removed++; bytes += result.Bytes; perPattern[pattern]++ }
++            return filepath.SkipDir
++        }
+ 		if managed {
+ 			if reason := managedArtifactKeepReason(ctx, rel, path); reason != "" {
+ 				d.logger.Info("gc: managed artifact retained", "path", path, "reason", reason, "retained_bytes", dirSize(path))

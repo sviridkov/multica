@@ -452,9 +452,10 @@ func ResolveParentStatuses(ctx context.Context, report *DiskUsageReport, fetch P
 
 // taskSize walks taskDir and returns (totalBytes, artifactBytes). It never
 // follows symlinks and counts only regular files. A directory matched by
-// matcher is treated as an artifact subtree — its size is added to both totals
-// and the walk does not descend further so the size matches what os.RemoveAll
-// would reclaim if the GC ran cleanTaskArtifacts on it.
+// matcher is measured as a subtree without descending further. Managed paths
+// count toward artifactBytes only if they pass GC's content retention policy;
+// retained caches still count toward totalBytes. Basename matches remain an
+// estimate subject to GC's Git and lifecycle guards.
 //
 // A .git subtree is counted whole into totalBytes but never into artifactBytes.
 // It is real footprint the user sees in their file manager, and a full
@@ -502,6 +503,13 @@ func taskSize(taskDir string, matcher artifactMatcher) (totalBytes int64, artifa
 			if _, ok := matcher.matchDirectory(absRoot, path, entry); ok {
 				size := dirSize(path)
 				totalBytes += size
+				rel, relErr := filepath.Rel(absRoot, path)
+				if relErr != nil {
+					return filepath.SkipDir
+				}
+				if _, managed := matcher.exactPaths[rel]; managed && managedArtifactKeepReason(context.Background(), rel, path) != "" {
+					return filepath.SkipDir
+				}
 				artifactBytes += size
 				return filepath.SkipDir
 			}
