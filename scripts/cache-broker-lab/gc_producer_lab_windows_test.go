@@ -69,8 +69,18 @@ func nativeProducerVolume(t *testing.T, cfg nativeLab) string {
 	if _, err = os.Stat(mount); err != nil {
 		t.Fatalf("VHD was not mounted: %v %s", err, out)
 	}
-	if out, err = exec.Command("icacls.exe", mount, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX").CombinedOutput(); err != nil {
-		t.Fatalf("quota root ACL: %v %s", err, out)
+	// A freshly formatted NTFS root has explicit ACEs. Granting selected SIDs
+	// does not remove those defaults, which would propagate into service state.
+	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	acl, _, err := descriptor.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = windows.SetNamedSecurityInfo(mount, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil); err != nil {
+		t.Fatal("quota root ACL:", err)
 	}
 	t.Cleanup(func() {
 		path := filepath.Join(root, "detach.txt")
