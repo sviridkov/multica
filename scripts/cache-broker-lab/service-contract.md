@@ -155,8 +155,8 @@ installed Codex app-server or a paid model call. No caller chooses its executabl
 arguments, UID/SID, paths or containment policy.
 
 A persistent privileged supervisor owns launch authority and native containment.
-The restartable driver alone holds its private client credential, outside task
-read access. It reserves an exact run/lease/generation/identity durably before
+The restartable driver uses a private client credential outside task read access;
+the supervisor, service and host administrator remain in the privileged trust boundary. It reserves an exact run/lease/generation/identity durably before
 launch, never reuses identities, and seals future launches before querying native
 quiescence. Driver Result, leader exit, pipe closure, elapsed time and a restarted
 cache service are insufficient evidence. Native query failures and a reopened
