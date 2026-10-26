@@ -221,6 +221,11 @@ func TestBrokerNativeIsolatedProducerFailures(t *testing.T) {
 						}
 						labWrite(t, filepath.Join(root, filepath.FromSlash(other), "unknown.txt"), "unknown other cache")
 						p := startProducer(t, cfg, recipe, volume, artifact, route, mode, 1)
+						if mode != "physical-quota" {
+							if r := p.request(t, "quiesce"); r.Error != "" {
+								t.Fatal("validation probe lacks whole-tree completion", r.Error)
+							}
+						}
 						if r := p.request(t, "publish"); r.Error == "" || r.Receipt.State == "committed" {
 							t.Fatal("unsafe production published", r)
 						}

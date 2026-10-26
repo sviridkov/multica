@@ -31,10 +31,30 @@ for index in $(seq 0 47); do
   sudo dscl . -create "/Users/$runtime_user" NFSHomeDirectory /var/empty
   sudo dscl . -create "/Users/$runtime_user" AuthenticationAuthority ';DisabledUser;'
 done
-# Register the protected OS shim; the selected Xcode path need not satisfy
-# the broker's strict root ownership policy. Record both executable identities.
-producer_git="/usr/bin/git"
+# Resolve the toolchain before entering any ordinary producer domain. Keep its
+# executable and local transport helper in the protected lab namespace so Git
+# never invokes the Xcode discovery shim under a producer UID.
 selected_git="$(/usr/bin/xcrun --find git)"
+git_core="$lab_root/git-core"
+git_bin="$lab_root/git-bin"
+sudo mkdir -m 0755 "$git_core" "$git_bin"
+for command in git git-upload-pack; do
+  sudo cp -X "$selected_git" "$git_core/$command"
+  sudo chown root:wheel "$git_core/$command"
+  sudo chmod 0755 "$git_core/$command"
+done
+python3 - "$git_core" > "$build_dir/git-wrapper" <<'PYGIT'
+import shlex,sys
+core = sys.argv[1]
+print('#!/bin/sh')
+print('export GIT_EXEC_PATH=' + shlex.quote(core))
+print('exec ' + shlex.quote(core + '/git') + ' "$@"')
+PYGIT
+producer_git="$git_bin/git"
+sudo cp -X "$build_dir/git-wrapper" "$producer_git"
+sudo chown root:wheel "$producer_git"
+sudo chmod 0755 "$producer_git"
+[[ "$("$producer_git" --exec-path)" == "$git_core" ]]
 python3 - "$lab_root" "$lab_uid" "$producer_git" > "$build_dir/native-config.json" <<'PYCONFIG'
 import json,sys
 print(json.dumps(dict(Root=sys.argv[1],Producer=sys.argv[1]+"/producer",Service=sys.argv[1]+"/broker-service",Census=sys.argv[1]+"/runtime-census",Git=sys.argv[3],UID=int(sys.argv[2]),GID=20,RuntimeIdentities=[dict(UID=600+i,GID=600+i) for i in range(48)])))
@@ -49,6 +69,9 @@ printf 'producer_git=%s\n' "$producer_git" >> "$build_dir/native-identity.log"
 shasum -a 256 "$producer_git" >> "$build_dir/native-identity.log"
 printf 'selected_git=%s\n' "$selected_git" >> "$build_dir/native-identity.log"
 shasum -a 256 "$selected_git" >> "$build_dir/native-identity.log"
+printf 'git_exec_path=%s\n' "$git_core" >> "$build_dir/native-identity.log"
+shasum -a 256 "$git_core/git" "$git_core/git-upload-pack" >> "$build_dir/native-identity.log"
+"$producer_git" --version >> "$build_dir/native-identity.log"
 sudo -u "$lab_user" sudo -n true && exit 4
 set +e
 sudo env MULTICA_NATIVE_BROKER_CONFIG="$lab_root/config.json" "$lab_root/broker-test" -test.run '^TestBrokerNative' -test.v -test.timeout 25m > "$build_dir/native.log" 2>&1

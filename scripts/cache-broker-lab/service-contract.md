@@ -268,10 +268,14 @@ bytes expire with the disposable VM. There is no automatic eviction.
 
 On macOS, the inherited producer sandbox permits Git/helper execution, writes
 stored data only under the exact staging directory, permits the `/dev/null` sink,
-and networking only on loopback for the catalog fixture. The registered Git path
-remains the protected OS shim; bootstrap records it and the selected developer
-Git executable. The native platform toolchain remains trusted. External
-launch-service IPC remains denied. On Windows the
+and networking only on loopback for the catalog fixture. Bootstrap resolves Git
+before launch and copies its executable and local upload-pack helper into a
+protected directory. A measured wrapper fixes that helper path, avoiding Xcode
+discovery under a producer UID. Native evidence records the selected executable,
+protected copies and wrapper hashes. The native platform toolchain remains
+trusted. The sandbox denies external launch-service IPC; the RUID census still
+requires every process under that identity to exit, including any platform
+service started indirectly. On Windows the
 ordinary token enters a private, noninherited, kill-on-close Job while suspended,
 then resumes. ACLs exclude other ordinary staging writers and all ordinary
 publication/control writers. As in the runtime fixture, a Windows Job does not
@@ -295,7 +299,9 @@ publication filesystem quota.
 The native suite verifies two artifacts, two GC routes and two generations, with
 a live detached writer denying each initial publication. The incomplete-evidence,
 symlink/hardlink, logical-capacity and physical-capacity matrix preserves unknown staging bytes,
-task results and the other exact cache. A separate four-case matrix kills the
+task results and the other exact cache. Content/link/logical-quota probes must
+first establish whole-domain quiescence so an unrelated live-process refusal
+cannot count as input-validation coverage. A separate four-case matrix kills the
 actual supervisor process after leader exit while its descendant is active.
 macOS demonstrates the orphan survives and must be preserved; Windows demonstrates
 Job closure terminates it. In both cases a new supervisor process cannot recover
