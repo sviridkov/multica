@@ -70,5 +70,9 @@ func nativeAttackCommand(t *testing.T, cfg nativeLab, root, role string) *exec.C
 	cmd.SysProcAttr = &syscall.SysProcAttr{Token: syscall.Token(token)}
 	cmd.Dir = root
 	cmd.Env = append(nativeBaseEnv(), "MULTICA_BROKER_ATTACK_ROOT="+root, "MULTICA_BROKER_PRODUCER="+cfg.Producer, "MULTICA_BROKER_ATTACK_ROLE="+role)
+	if cfg.TaskTemp == "" {
+		t.Fatal("ordinary task needs a separate writable temp directory")
+	}
+	cmd.Env = append(cmd.Env, "TEMP="+cfg.TaskTemp, "TMP="+cfg.TaskTemp, "USERPROFILE="+cfg.TaskTemp)
 	return cmd
 }

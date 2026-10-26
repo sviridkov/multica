@@ -3,16 +3,20 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted VM required' }
 $labRoot = "C:\multica-cache-lab-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 $labUser = 'cachelabtask'
+$taskTemp = "C:\multica-cache-task-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 $labPassword = [guid]::NewGuid().ToString() + 'aA!7'
 New-LocalUser -Name $labUser -Password (ConvertTo-SecureString $labPassword -AsPlainText -Force) -AccountNeverExpires | Out-Null
 if (!((Get-LocalGroupMember -Group 'Users').Name -contains "$env:COMPUTERNAME\$labUser")) { Add-LocalGroupMember -Group 'Users' -Member $labUser }
 if ((Get-LocalGroupMember -Group 'Administrators').Name -contains "$env:COMPUTERNAME\$labUser") { throw 'Task user is administrator' }
+New-Item -ItemType Directory -Path $taskTemp | Out-Null
+& icacls $taskTemp /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "${labUser}:(OI)(CI)F"
+if ($LASTEXITCODE -ne 0) { throw 'Ordinary task temp ACL failed' }
 New-Item -ItemType Directory -Path $labRoot | Out-Null
 & icacls $labRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX'
 if ($LASTEXITCODE -ne 0) { throw 'ACL bootstrap failed' }
 Copy-Item "$BuildDir\producer.exe", "$BuildDir\broker-test.exe" $labRoot
 $gitPath = (Get-Command git.exe).Source
-@{Root=$labRoot;Producer="$labRoot\producer.exe";Git=$gitPath;TaskUser=$labUser;TaskPassword=$labPassword} | ConvertTo-Json | Set-Content "$labRoot\config.json" -Encoding utf8NoBOM
+@{Root=$labRoot;Producer="$labRoot\producer.exe";Git=$gitPath;TaskUser=$labUser;TaskPassword=$labPassword;TaskTemp=$taskTemp} | ConvertTo-Json | Set-Content "$labRoot\config.json" -Encoding utf8NoBOM
 & icacls "$labRoot\config.json" /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F'
 if ($LASTEXITCODE -ne 0) { throw 'Private fixture credentials ACL failed' }
 $runner = @"
