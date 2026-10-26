@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"fmt"
 	"golang.org/x/sys/windows"
 	"os"
 	"os/exec"
@@ -10,6 +11,31 @@ import (
 	"testing"
 	"unsafe"
 )
+
+func nativePermissionAttack(path string) error {
+	// A null DACL would allow all principals; the unprivileged child must be denied WRITE_DAC.
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, nil, nil)
+}
+
+func nativeExtraMetadata(path string) error {
+	return os.WriteFile(path+":cache-lab", []byte("preserve this stream"), 0600)
+}
+
+func nativeDirectoryLink(link, target string) error {
+	out, err := exec.Command("cmd.exe", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("create fixture junction: %w: %s", err, out)
+	}
+	return nil
+}
+
+func nativeWidenPermissions(path string) error {
+	out, err := exec.Command("icacls.exe", path, "/grant", "*S-1-5-32-545:W").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("widen fixture DACL: %w: %s", err, out)
+	}
+	return nil
+}
 
 func nativePrivileged() bool {
 	u, e := windows.GetCurrentProcessToken().GetTokenUser()

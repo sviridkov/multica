@@ -44,7 +44,7 @@ func TestBrokerNativeNegatives(t *testing.T) {
 	cfg := mustLab(t)
 	for _, route := range []string{"direct", "walk"} {
 		for _, artifact := range []string{cachebrokerlab.Marketplaces, cachebrokerlab.Catalog} {
-			for _, mutation := range []string{"content", "metadata", "credentials", "nested-git", "local-ref", "local-commit", "stash", "hardlink", "symlink"} {
+			for _, mutation := range []string{"content", "metadata", "credentials", "nested-git", "local-ref", "local-commit", "stash", "hardlink", "symlink", "extra-metadata", "directory-link", "widen-permissions"} {
 				if artifact == cachebrokerlab.Catalog && (mutation == "local-ref" || mutation == "local-commit" || mutation == "stash") {
 					continue
 				}
@@ -72,6 +72,14 @@ func TestBrokerNativeNegatives(t *testing.T) {
 						err = os.WriteFile(file, []byte("locally changed producer content"), 0644)
 					case "metadata":
 						err = os.Chmod(file, 0444)
+					case "extra-metadata":
+						err = nativeExtraMetadata(file)
+					case "widen-permissions":
+						err = nativeWidenPermissions(file)
+					case "directory-link":
+						preserved = filepath.Join(root, "external-dir", "result")
+						labWrite(t, preserved, "external directory result")
+						err = nativeDirectoryLink(filepath.Join(target, "external-dir-link"), filepath.Dir(preserved))
 					case "credentials":
 						preserved = filepath.Join(target, "auth.json")
 						labWrite(t, preserved, "fixture credential must survive")

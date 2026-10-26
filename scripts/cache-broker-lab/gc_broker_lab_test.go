@@ -199,8 +199,9 @@ func TestBrokerAttackChild(t *testing.T) {
 			t.Fatal(err)
 		}
 		ops := map[string]func() error{
-			"chmod":  func() error { return os.Chmod(path, 0777) },
-			"rename": func() error { return os.Rename(path, path+".attacker") },
+			"chmod":       func() error { return os.Chmod(path, 0777) },
+			"rename":      func() error { return os.Rename(path, path+".attacker") },
+			"permissions": func() error { return nativePermissionAttack(path) },
 		}
 		if info.IsDir() {
 			ops["create"] = func() error { return os.WriteFile(filepath.Join(path, "attacker-insertion"), []byte("attack"), 0600) }

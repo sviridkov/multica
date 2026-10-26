@@ -3,12 +3,25 @@
 package daemon
 
 import (
+	"golang.org/x/sys/unix"
 	"os"
 	"os/exec"
 	"strconv"
 	"syscall"
 	"testing"
 )
+
+func nativePermissionAttack(path string) error {
+	return unix.Setxattr(path, "user.cache-lab-attacker", []byte("attack"), 0)
+}
+
+func nativeExtraMetadata(path string) error {
+	return unix.Setxattr(path, "user.cache-lab", []byte("preserve this attribute"), 0)
+}
+
+func nativeDirectoryLink(link, target string) error { return os.Symlink(target, link) }
+
+func nativeWidenPermissions(path string) error { return os.Chmod(path, 0666) }
 
 func nativePrivileged() bool  { return os.Geteuid() == 0 }
 func nativeIdentity() string  { return strconv.Itoa(os.Geteuid()) }
