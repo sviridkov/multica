@@ -36,8 +36,8 @@ class MacOSBootstrapTests(unittest.TestCase):
                       ". -search /Users RecordName cachelabtask",
                       ". -search /Users UniqueID 60000",
                       ". -search /Groups PrimaryGroupID 60000",
-                      ". -search /Users RecordName cachelabrun383",
-                      ". -search /Groups RecordName cachelabrun383"]:
+                      ". -search /Users RecordName cachelabrun511",
+                      ". -search /Groups RecordName cachelabrun511"]:
             with self.subTest(query=query):
                 result, mutated = self.run_preflight(query)
                 self.assertNotEqual(result.returncode, 0, result.stderr)

@@ -20,7 +20,7 @@ require_unused_identity() {
 # abort too; missing optional search tools must never bypass collision checks.
 require_unused_identity /Users UniqueID "$lab_uid"
 require_unused_identity /Users RecordName "$lab_user"
-for index in $(seq 0 383); do
+for index in $(seq 0 511); do
   runtime_uid=$((runtime_uid_base+index))
   runtime_user="cachelabrun$index"
   require_unused_identity /Users UniqueID "$runtime_uid"
@@ -37,7 +37,7 @@ sudo mkdir -m 0755 "$lab_root"
 sudo cp -X "$build_dir/producer" "$build_dir/broker-test" "$build_dir/broker-service" "$build_dir/runtime-census" "$lab_root/"
 sudo chown -R root:wheel "$lab_root"
 sudo chmod 0755 "$lab_root/producer" "$lab_root/broker-test" "$lab_root/broker-service" "$lab_root/runtime-census"
-for index in $(seq 0 383); do
+for index in $(seq 0 511); do
   runtime_uid=$((runtime_uid_base+index))
   runtime_user="cachelabrun$index"
   sudo dscl . -create "/Groups/$runtime_user"
@@ -76,7 +76,7 @@ sudo chmod 0755 "$producer_git"
 python3 - "$lab_root" "$lab_uid" "$producer_git" "$runtime_uid_base" > "$build_dir/native-config.json" <<'PYCONFIG'
 import json,sys
 base = int(sys.argv[4])
-print(json.dumps(dict(Root=sys.argv[1],Producer=sys.argv[1]+"/producer",Service=sys.argv[1]+"/broker-service",Census=sys.argv[1]+"/runtime-census",Git=sys.argv[3],UID=int(sys.argv[2]),GID=20,RuntimeIdentities=[dict(UID=base+i,GID=base+i) for i in range(384)])))
+print(json.dumps(dict(Root=sys.argv[1],Producer=sys.argv[1]+"/producer",Service=sys.argv[1]+"/broker-service",Census=sys.argv[1]+"/runtime-census",Git=sys.argv[3],UID=int(sys.argv[2]),GID=20,RuntimeIdentities=[dict(UID=base+i,GID=base+i) for i in range(512)])))
 PYCONFIG
 sudo cp "$build_dir/native-config.json" "$lab_root/config.json"
 sudo chown root:wheel "$lab_root/config.json"

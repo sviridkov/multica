@@ -17,7 +17,7 @@ if ($LASTEXITCODE -ne 0) { throw 'ACL bootstrap failed' }
 Copy-Item "$BuildDir\producer.exe", "$BuildDir\broker-test.exe", "$BuildDir\broker-service.exe" $labRoot
 $gitPath = (Get-Command git.exe).Source
 $runtimeIdentities = @()
-for ($index=0; $index -lt 384; $index++) {
+for ($index=0; $index -lt 512; $index++) {
   $runtimeUser = "cachelabrun$index"
   $runtimePassword = [guid]::NewGuid().ToString() + 'aA!7'
   $account = New-LocalUser -Name $runtimeUser -Password (ConvertTo-SecureString $runtimePassword -AsPlainText -Force) -AccountNeverExpires
