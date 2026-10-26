@@ -320,6 +320,19 @@ func TestBrokerNativeRuntimeCycles(t *testing.T) {
 					if data, err := os.ReadFile(filepath.Join(root, "codex-home", "task-created.json")); err != nil || string(data) != "task-owned" {
 						t.Fatal("writable home output lost", err)
 					}
+					unknown := cachebrokerlab.Catalog
+					if artifact == cachebrokerlab.Catalog {
+						unknown = cachebrokerlab.Marketplaces
+					}
+					if data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(unknown), "unknown.txt")); err != nil || string(data) != "task-owned unknown cache" {
+						t.Fatal("unproven exact cache path lost", err)
+					}
+					for _, parent := range []string{"codex-home", "codex-home/.tmp", "codex-home/cache"} {
+						if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(parent), "task-created-directory")); err != nil {
+							t.Fatal("task sibling directory lost", err)
+						}
+					}
+
 					t.Logf("RUNTIME_CYCLE route=%s artifact=%s cycle=%d real_multica_adapter=true offline_protocol_fixture=true detached_descendant_retained=true driver_crash_restart_active=true service_restart_active=true logical_bytes=%d", route, artifact, cycle+1, expected)
 				}
 			})
@@ -454,6 +467,20 @@ func TestBrokerRuntimeFixture(t *testing.T) {
 	if _, err := os.ReadFile(filepath.Join(os.Getenv("MULTICA_RUNTIME_CONTROL"), "client.key")); err == nil {
 		t.Fatal("runtime read daemon credential")
 	}
+	// The other exact cache path has no producer receipt. A task-created tree
+	// there must remain ordinary unknown data through both GC routes.
+	unknown := cachebrokerlab.Catalog
+	if artifact == cachebrokerlab.Catalog {
+		unknown = cachebrokerlab.Marketplaces
+	}
+	unknownPath := filepath.Join(root, filepath.FromSlash(unknown))
+	if err := os.Mkdir(unknownPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unknownPath, "unknown.txt"), []byte("task-owned unknown cache"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
 	if artifact == cachebrokerlab.Marketplaces {
 		if b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(artifact), "cache-lab/plugins/sample/marker.txt")); err != nil || string(b) != "immutable local fixture" {
 			t.Fatal("marketplace not restored before runtime discovery", err)

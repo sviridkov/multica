@@ -23,7 +23,8 @@ excluded from deletion. A source, producer or recipe upgrade requires a new
 registration policy, never reinterpretation of old evidence.
 
 The lab uses root on macOS and LocalSystem on Windows, with administrators outside
-the threat model. Every ancestor must exclude ordinary mutations. The control
+the threat model. General ancestors exclude ordinary mutations; the runtime
+layout below permits creation only in three exact protected parents. The control
 directory additionally excludes ordinary reads; certificates and keys are not
 placed in task environment variables, logs or uploaded artifacts. Tasks can read
 published caches but cannot write, rename or replace their entries or parents.
