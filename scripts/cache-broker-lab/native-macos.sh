@@ -14,12 +14,12 @@ sudo dscl . -create "/Users/$lab_user" PrimaryGroupID 20
 sudo dscl . -create "/Users/$lab_user" UserShell /bin/bash
 sudo dscl . -create "/Users/$lab_user" NFSHomeDirectory /var/empty
 sudo mkdir -m 0755 "$lab_root"
-sudo cp -X "$build_dir/producer" "$build_dir/broker-test" "$lab_root/"
+sudo cp -X "$build_dir/producer" "$build_dir/broker-test" "$build_dir/broker-service" "$lab_root/"
 sudo chown -R root:wheel "$lab_root"
-sudo chmod 0755 "$lab_root/producer" "$lab_root/broker-test"
+sudo chmod 0755 "$lab_root/producer" "$lab_root/broker-test" "$lab_root/broker-service"
 python3 - "$lab_root" "$lab_uid" > "$build_dir/native-config.json" <<'PYCONFIG'
 import json,sys
-print(json.dumps(dict(Root=sys.argv[1],Producer=sys.argv[1]+"/producer",Git="/usr/bin/git",UID=int(sys.argv[2]),GID=20)))
+print(json.dumps(dict(Root=sys.argv[1],Producer=sys.argv[1]+"/producer",Service=sys.argv[1]+"/broker-service",Git="/usr/bin/git",UID=int(sys.argv[2]),GID=20)))
 PYCONFIG
 sudo cp "$build_dir/native-config.json" "$lab_root/config.json"
 sudo chown root:wheel "$lab_root/config.json"

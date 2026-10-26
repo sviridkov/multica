@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - server/internal/daemon/cachebrokerlab/**
+      - server/cmd/cache-broker-lab/**
       - scripts/cache-broker-lab/**
       - .github/workflows/cache-broker-lab.yml
   workflow_dispatch:

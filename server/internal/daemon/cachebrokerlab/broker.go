@@ -3,6 +3,7 @@
 package cachebrokerlab
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 const Marketplaces = "codex-home/.tmp/marketplaces"
@@ -64,6 +66,14 @@ type Broker struct {
 	root    *os.Root
 	lease   *os.File
 	records map[string]Receipt
+	fault   func(string) error
+}
+
+func (b *Broker) hit(point string) error {
+	if b.fault != nil {
+		return b.fault(point)
+	}
+	return nil
 }
 
 // Open requires a privileged, protected test installation; an ordinary process
@@ -138,13 +148,25 @@ func (b *Broker) persist() error {
 	if err != nil {
 		return err
 	}
-	_, writeErr := f.Write(data)
-	syncErr := f.Sync()
+	writeErr := b.hit("receipt.before-write")
+	if writeErr == nil {
+		_, writeErr = f.Write(data)
+	}
+	syncErr := b.hit("receipt.before-sync")
+	if syncErr == nil {
+		syncErr = f.Sync()
+	}
 	closeErr := f.Close()
 	if err = errors.Join(writeErr, syncErr, closeErr); err != nil {
 		return err
 	}
-	return replaceJournal(b.policy.Root)
+	if err := b.hit("receipt.before-replace"); err != nil {
+		return err
+	}
+	if err := replaceJournal(b.policy.Root); err != nil {
+		return err
+	}
+	return b.hit("receipt.after-replace")
 }
 func exact(artifact string) bool { return artifact == Marketplaces || artifact == Catalog }
 func (b *Broker) Receipt(artifact string) Receipt {
@@ -181,6 +203,9 @@ func (b *Broker) Materialize(ctx context.Context, artifact string) (Receipt, err
 	if err := b.persist(); err != nil {
 		return cloneReceipt(r), err
 	}
+	if err := b.hit("producer.intent"); err != nil {
+		return cloneReceipt(r), err
+	}
 	kind := "catalog"
 	if artifact == Marketplaces {
 		kind = "marketplace"
@@ -189,9 +214,22 @@ func (b *Broker) Materialize(ctx context.Context, artifact string) (Receipt, err
 	cmd.Dir = b.policy.Root
 	evidencePath := filepath.Join(b.policy.Root, fmt.Sprintf("producer-%s-%d.json", kind, r.Generation))
 	cmd.Env = append(producerEnvironment(b.policy, kind), "MULTICA_CACHE_LAB_EVIDENCE="+evidencePath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return r, fmt.Errorf("producer failed: %w: %s", err, out)
+	cmd.WaitDelay = 5 * time.Second
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		return r, err
+	}
+	if err := b.hit("producer.running"); err != nil {
+		killErr := cmd.Process.Kill()
+		waitErr := cmd.Wait()
+		return r, errors.Join(err, killErr, waitErr)
+	}
+	if err := cmd.Wait(); err != nil {
+		return r, fmt.Errorf("producer failed: %w: %s", err, output.Bytes())
+	}
+	if err := b.hit("producer.exited"); err != nil {
+		return cloneReceipt(r), err
 	}
 	evidenceBytes, err := os.ReadFile(evidencePath)
 	if err != nil {
@@ -211,6 +249,9 @@ func (b *Broker) Materialize(ctx context.Context, artifact string) (Receipt, err
 		return cloneReceipt(r), err
 	}
 	r.State = "committed"
+	if err := b.hit("producer.inventory"); err != nil {
+		return cloneReceipt(r), err
+	}
 	r.Entries = entries
 	b.records[artifact] = r
 	if err := b.persist(); err != nil {
@@ -218,7 +259,7 @@ func (b *Broker) Materialize(ctx context.Context, artifact string) (Receipt, err
 		b.records[artifact] = r
 		return cloneReceipt(r), err
 	}
-	return cloneReceipt(r), nil
+	return cloneReceipt(r), b.hit("producer.committed")
 }
 
 // Reclaim owns validation, journal consumption and deletion in one serialized
@@ -267,14 +308,40 @@ func (b *Broker) Reclaim(ctx context.Context, expected Receipt) (Outcome, error)
 	if err := b.persist(); err != nil {
 		return Outcome{}, err
 	}
-	if err := b.root.RemoveAll(r.Artifact); err != nil {
+	if err := b.hit("reclaim.consumed"); err != nil {
+		return Outcome{}, err
+	}
+	if err := b.remove(r); err != nil {
 		return Outcome{}, fmt.Errorf("partial reclaim; receipt consumed: %w", err)
+	}
+	if err := b.hit("reclaim.absent"); err != nil {
+		return Outcome{}, err
 	}
 	var size int64
 	for _, e := range r.Entries {
 		size += e.Bytes
 	}
 	return Outcome{Removed: true, Bytes: size}, nil
+}
+
+func (b *Broker) remove(r Receipt) error {
+	if b.fault == nil {
+		return b.root.RemoveAll(r.Artifact)
+	}
+	// WalkDir inventory is parent-first. Reverse removal provides real, precise
+	// crash boundaries without following links or deleting unrecorded entries.
+	for i := len(r.Entries) - 1; i >= 0; i-- {
+		if err := b.hit("unlink.before"); err != nil {
+			return err
+		}
+		if err := b.root.Remove(filepath.Join(r.Artifact, filepath.FromSlash(r.Entries[i].Path))); err != nil {
+			return err
+		}
+		if err := b.hit("unlink.after"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func inventory(root string) ([]Entry, error) {

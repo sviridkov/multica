@@ -14,9 +14,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Ordinary task temp ACL failed' }
 New-Item -ItemType Directory -Path $labRoot | Out-Null
 & icacls $labRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX'
 if ($LASTEXITCODE -ne 0) { throw 'ACL bootstrap failed' }
-Copy-Item "$BuildDir\producer.exe", "$BuildDir\broker-test.exe" $labRoot
+Copy-Item "$BuildDir\producer.exe", "$BuildDir\broker-test.exe", "$BuildDir\broker-service.exe" $labRoot
 $gitPath = (Get-Command git.exe).Source
-@{Root=$labRoot;Producer="$labRoot\producer.exe";Git=$gitPath;TaskUser=$labUser;TaskPassword=$labPassword;TaskTemp=$taskTemp} | ConvertTo-Json | Set-Content "$labRoot\config.json" -Encoding utf8NoBOM
+@{Root=$labRoot;Producer="$labRoot\producer.exe";Service="$labRoot\broker-service.exe";Git=$gitPath;TaskUser=$labUser;TaskPassword=$labPassword;TaskTemp=$taskTemp} | ConvertTo-Json | Set-Content "$labRoot\config.json" -Encoding utf8NoBOM
 & icacls "$labRoot\config.json" /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F'
 if ($LASTEXITCODE -ne 0) { throw 'Private fixture credentials ACL failed' }
 $runner = @"

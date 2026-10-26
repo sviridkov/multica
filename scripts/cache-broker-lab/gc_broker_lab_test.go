@@ -18,8 +18,8 @@ import (
 
 type labReclaimer func(context.Context, string) (cachebrokerlab.Outcome, error)
 type nativeLab struct {
-	Root, Producer, Git, TaskUser, TaskPassword, TaskTemp string
-	UID, GID                                              uint32
+	Root, Producer, Service, Git, TaskUser, TaskPassword, TaskTemp string
+	UID, GID                                                       uint32
 }
 
 func mustLab(t *testing.T) nativeLab {

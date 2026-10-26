@@ -52,9 +52,11 @@ subprocess.run(["git", "-c", "core.autocrlf=false", "apply", "-"], input=patch_b
 for test in lab.glob("*_test.go"):
     shutil.copy2(test, multica / "server/internal/daemon" / test.name)
 subprocess.run(["go", "test", "-c", "-tags=cachebrokerlab", "./internal/daemon", "-o", str(out / ("broker-test" + suffix))], cwd=multica / "server", check=True)
+subprocess.run(["go", "build", "-tags=cachebrokerlab", "-o", str(out / ("broker-service" + suffix)), "./cmd/cache-broker-lab"], cwd=multica / "server", check=True)
 (out / "build-provenance.json").write_text(json.dumps({
     **source,
     "patch_sha256": hashlib.sha256(patch_bytes("codex.patch")).hexdigest(),
     "producer_sha256": hashlib.sha256(producer.read_bytes()).hexdigest(),
+    "service_sha256": hashlib.sha256((out / ("broker-service" + suffix)).read_bytes()).hexdigest(),
     "multica_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
 }, indent=2))
