@@ -20,6 +20,19 @@ func nativeProducerQuotaError(err error) bool {
 	return errors.Is(err, windows.ERROR_DISK_FULL) || errors.Is(err, windows.ERROR_HANDLE_DISK_FULL) || errors.Is(err, windows.ERROR_DISK_QUOTA_EXCEEDED)
 }
 
+func nativeStorageAvailable(t *testing.T, path string) int64 {
+	t.Helper()
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var available, total, free uint64
+	if err := windows.GetDiskFreeSpaceEx(p, &available, &total, &free); err != nil {
+		t.Fatal(err)
+	}
+	return int64(available)
+}
+
 func nativeProducerDiagnostics(d *nativeRuntimeDomain) string {
 	active, err := d.Active()
 	return fmt.Sprintf("Job active=%d query_error=%v", active, err)

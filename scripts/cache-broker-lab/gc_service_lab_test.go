@@ -30,6 +30,7 @@ type serviceLab struct {
 	sequence              int
 	home                  *cachebrokerlab.Home
 	stages                []serviceAcquisitionSlot
+	storage               *cachebrokerlab.StorageLayout
 }
 
 type serviceAcquisitionSlot struct {
@@ -46,7 +47,15 @@ func newServiceLab(t *testing.T, options ...func(*cachebrokerlab.ServiceConfig))
 	if err := b.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s := &serviceLab{cfg: cfg, control: filepath.Join(root, "control"), state: filepath.Join(root, "state")}
+	dataVolume := nativeProducerVolume(t, cfg)
+	serviceRoot, err := os.MkdirTemp(dataVolume, "service-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(serviceRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	s := &serviceLab{cfg: cfg, control: filepath.Join(serviceRoot, "control"), state: filepath.Join(serviceRoot, "state")}
 	for _, path := range []string{s.control, s.state} {
 		if err := os.Mkdir(path, 0755); err != nil {
 			t.Fatal(err)
@@ -67,6 +76,20 @@ func newServiceLab(t *testing.T, options ...func(*cachebrokerlab.ServiceConfig))
 			s.stages = append(s.stages, serviceAcquisitionSlot{Generation: generation, Artifact: artifact, Stage: nativeProducerStage(t, volume, id), Volume: volume, Identity: id})
 		}
 	}
+	layout := cachebrokerlab.StorageLayout{BudgetBytes: 256 << 20, Control: s.control,
+		Volumes: []cachebrokerlab.StorageVolume{
+			{Root: dataVolume, LimitBytes: 128 << 20, MinFreeBytes: 16 << 20},
+			{Root: volume, LimitBytes: 128 << 20, MinFreeBytes: 16 << 20},
+		}}
+	for _, slot := range s.stages {
+		layout.Slots = append(layout.Slots, cachebrokerlab.StorageSlot{Generation: slot.Generation, Artifact: slot.Artifact, Stage: slot.Stage, Volume: slot.Volume})
+	}
+	serviceConfig.Storage, err = cachebrokerlab.CaptureStorage(s.state, layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.storage = serviceConfig.Storage
+	t.Logf("STORAGE_REGISTRY budget_bytes=%d volumes=%d slots=%d state_control_bounded=true", s.storage.BudgetBytes, len(s.storage.Volumes), len(s.storage.Slots))
 	data, _ := json.Marshal(struct {
 		Service      cachebrokerlab.ServiceConfig
 		Control      string

@@ -295,7 +295,8 @@ Only the immutable-to-ordinary-identities publication is inventoried for GC;
 staging and task outputs are never GC targets. Copy/rename/journal uncertainty
 retains an unproven intent and partial publication. Sixteen retained partial
 publication roots stop admission; this is a count limit, not an aggregate
-publication filesystem quota.
+publication filesystem quota. The isolated service additionally uses the fixed
+aggregate storage registry described below; standalone broker probes do not.
 
 The native suite verifies two artifacts, two GC routes and two generations, with
 a live detached writer denying each initial publication. The incomplete-evidence,
@@ -312,8 +313,8 @@ This tests process death, not machine/power loss.
 
 Service `prepare` and its runtime-adapter fixtures now use staged acquisition.
 Production GC and installed Desktop remain unchanged. Real external source/auth
-and installed Codex home compatibility remain unverified. Aggregate publication/retention quotas, image
-lifecycle in a real deployment, signed executable identity, credential rotation,
+and installed Codex home compatibility remain unverified. Image lifecycle and
+aggregate storage provisioning in a real deployment, signed executable identity, credential rotation,
 Windows external IPC isolation and installer/update/rollback remain separate
 production obligations. None of these test results authorizes merge, installation
 or live cleanup of user environments.
@@ -365,5 +366,54 @@ cache and task results through restart and replacement. Existing native service
 cycles, fault/IO tests and runtime cycles also execute this staged prepare path.
 
 These are process-crash/IO results on disposable machines. They do not establish
-power-loss ordering, generic Windows IPC containment, publication/retention/log
-volume limits, installed Codex compatibility or production deployment authority.
+power-loss ordering, generic Windows IPC containment, installed Codex compatibility
+or production deployment authority.
+
+## Fixed storage registry and retained slots
+
+Each disposable service installation has two preprovisioned fixed 128 MiB
+filesystems: staging, and service state/control. All publication trees, partials,
+receipts, service/supervisor journals, acquisition profiles and service logs are
+on the second filesystem. Staging has four disjoint generation/artifact slots.
+Immutable recipe/toolchain assets and test-runner/CI logs are outside this pool;
+the service cannot grow them through its protocol. Independent task-result
+sentinels are outside the pool. This is a per-installation limit, not a host-wide
+allocator or a policy for all files of an installed Codex home.
+
+Privileged bootstrap captures the actual filesystem UUID (macOS) or volume GUID
+and serial (Windows), capacity, path, reserve floor and slot table into protected
+config outside task homes. The service copies that layout into its durable
+registry and refuses any changed layout on restart; it does not automatically
+discover replacement disks or migrate configuration. Both configured 128 MiB
+limits are charged in full against a 256 MiB aggregate reservation, including
+unclassified/retained data. Free space is only an admission signal, never proof
+of ownership or reclamation. These bounds do not measure unique APFS blocks.
+
+Startup checks identity/capacity and path membership before opening the journal
+for mutation. Each mutation repeats the native checks, including stage and
+state/control paths to reject nested mounts. Missing/query-failed/replaced/resized
+filesystems refuse operation; observed authority loss latches the running service
+until restart. Register/begin/prepare also refuse when either filesystem has less
+than its 16 MiB reserve. Readback and trusted reconciliation can still operate
+under that floor while space remains for the journal. A disk-full journal write
+still poisons the service. No automatic eviction, truncation, resize or slot reuse
+is implemented to obtain space. Exhausted installations require a separately
+reviewed operator recovery plan; supplying a different empty volume is refused.
+
+Before invoking the privileged acquisition factory, the service commits a claim
+for the exact slot with home/run/lease binding. The returned plan must match that
+slot and its registered capacity. A successful acquisition leaves the stage
+retained even if its published cache is later reclaimed. A reserved slot becomes
+quarantined on restart, without recovering native proof; it cannot be reissued.
+New generations use their own already reserved slots, and neither generation
+replacement nor GC subtracts retained data from the physical bound.
+
+Native checks cover aggregate pressure from staging, retained publication data
+and logs, unchanged data after denied requests/restart, real replacement-volume
+identity refusal, capacity-policy mismatch, missing volume, changed bootstrap,
+and a service exit after the slot claim but before factory invocation. The prior
+publication fault matrix also verifies each durable slot binding and retained
+state through recovery. Capacity-policy mismatch is not a real disk resize test;
+process restart is not machine restart or power-loss durability. Production
+provisioning, signed identity/rotation, full-home compatibility and approved
+installation remain open.

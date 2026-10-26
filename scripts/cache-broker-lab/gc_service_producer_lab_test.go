@@ -121,6 +121,11 @@ func TestBrokerNativeStagedServicePublicationFailures(t *testing.T) {
 							}
 							retained[stage] = labTreeSnapshot(t, stage)
 							s.restart(t)
+							wantSlot := "quarantined"
+							if point == "prepare.after-commit" {
+								wantSlot = "retained"
+							}
+							nativeStorageClaim(t, s, generation, artifact, wantSlot)
 							g := s.home.Generations[generation]
 							wantState := "quarantined"
 							if point == "prepare.after-commit" {

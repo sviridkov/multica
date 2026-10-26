@@ -27,6 +27,7 @@ type ServiceConfig struct {
 	Fault              func(string) error `json:"-"` // Disposable fault harness only.
 	RuntimeHomes       []WritableHome
 	Production         ProductionFactory `json:"-"`
+	Storage            *StorageLayout
 }
 
 // ProductionFactory is a privileged bootstrap capability. IPC callers select
@@ -72,6 +73,8 @@ type registry struct {
 	Version  int
 	Homes    map[string]*Home
 	Requests map[string]completedRequest
+	Storage  *StorageLayout
+	Slots    map[string]slotClaim
 }
 
 const (
@@ -99,18 +102,31 @@ func readBoundedJournal(path string, limit int64) ([]byte, error) {
 }
 
 type Service struct {
-	mu       sync.Mutex
-	config   ServiceConfig
-	epoch    string
-	journal  registry
-	lock     *os.File
-	fault    func(string) error
-	poisoned bool
+	mu               sync.Mutex
+	config           ServiceConfig
+	epoch            string
+	journal          registry
+	lock             *os.File
+	fault            func(string) error
+	poisoned         bool
+	storageProbe     storageProbe
+	protectedStorage bool
 }
 
 func OpenService(cfg ServiceConfig) (*Service, error) {
 	if cfg.RecipeID == "" || cfg.Root == "" {
 		return nil, errors.New("missing service bootstrap")
+	}
+	if cfg.Production != nil && cfg.Storage == nil {
+		return nil, errors.New("isolated acquisition requires protected quota storage registry")
+	}
+	if cfg.Storage != nil {
+		if err := cfg.Storage.protected(cfg.Root); err != nil {
+			return nil, err
+		}
+		if err := cfg.Storage.check(cfg.Root, false, nativeStorageVolume); err != nil {
+			return nil, err
+		}
 	}
 	for _, p := range []string{cfg.Root, cfg.Recipe.Producer, cfg.Recipe.Git, cfg.Recipe.Source} {
 		if err := protectedPath(p); err != nil {
@@ -120,17 +136,30 @@ func OpenService(cfg ServiceConfig) (*Service, error) {
 	if err := verifyBinary(cfg.Recipe.Producer, cfg.Recipe.ProducerSHA256); err != nil {
 		return nil, err
 	}
-	return openService(cfg)
+	s, err := openService(cfg)
+	if err == nil {
+		s.protectedStorage = true
+	}
+	return s, err
 }
 
 // openService contains the same disk/lock/recovery implementation used natively;
 // unit tests use an ordinary temporary directory, without claiming OS isolation.
 func openService(cfg ServiceConfig) (*Service, error) {
+	return openServiceWithStorage(cfg, nativeStorageVolume)
+}
+
+func openServiceWithStorage(cfg ServiceConfig, probe storageProbe) (*Service, error) {
+	if cfg.Storage != nil {
+		if err := cfg.Storage.check(cfg.Root, false, probe); err != nil {
+			return nil, err
+		}
+	}
 	lock, err := lockService(filepath.Join(cfg.Root, "service.lock"))
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{config: cfg, epoch: nonce(), lock: lock, fault: cfg.Fault}
+	s := &Service{config: cfg, epoch: nonce(), lock: lock, fault: cfg.Fault, storageProbe: probe}
 	fail := func(err error) (*Service, error) { s.Close(); return nil, err }
 	data, err := readBoundedJournal(filepath.Join(cfg.Root, "registry.json"), maxRegistryBytes)
 	if errors.Is(err, os.ErrNotExist) {
@@ -141,7 +170,7 @@ func openService(cfg ServiceConfig) (*Service, error) {
 		if len(entries) != 1 || entries[0].Name() != "service.lock" || cfg.ReadOnly {
 			return fail(errors.New("missing registry in a nonempty or read-only installation; retain everything"))
 		}
-		s.journal = registry{Version: 1, Homes: map[string]*Home{}, Requests: map[string]completedRequest{}}
+		s.journal = registry{Version: 1, Homes: map[string]*Home{}, Requests: map[string]completedRequest{}, Storage: cfg.Storage, Slots: map[string]slotClaim{}}
 	} else if err != nil {
 		return fail(err)
 	} else {
@@ -150,6 +179,15 @@ func openService(cfg ServiceConfig) (*Service, error) {
 		}
 		if err = s.validateRegistry(); err != nil {
 			return fail(err)
+		}
+		if err = s.validateStorageRegistry(); err != nil {
+			return fail(err)
+		}
+		for path, claim := range s.journal.Slots {
+			if claim.State == "reserved" {
+				claim.State = "quarantined"
+				s.journal.Slots[path] = claim
+			}
 		}
 		for _, h := range s.journal.Homes {
 			h.Revision++
@@ -314,7 +352,7 @@ func (s *Service) Execute(ctx context.Context, req Request) Response {
 		return resp
 	}
 	if s.poisoned {
-		return bad(errors.New("uncertain registry durability; restart required even for outcome queries"))
+		return bad(errors.New("uncertain registry durability or storage authority; restart required even for outcome queries"))
 	}
 	if req.Operation == "query" {
 		h := s.journal.Homes[req.HomeID]
@@ -334,6 +372,13 @@ func (s *Service) Execute(ctx context.Context, req Request) Response {
 	}
 	if s.config.ReadOnly {
 		return bad(errors.New("read-only rollback; mutations disabled"))
+	}
+	admission := req.Operation == "register" || req.Operation == "begin" || req.Operation == "prepare"
+	if err := s.checkStorage(admission); err != nil {
+		if !errors.Is(err, errStorageExhausted) {
+			s.poisoned = true
+		}
+		return bad(err)
 	}
 	if req.Epoch != s.epoch || req.RequestID == "" || len(req.RequestID) > 128 {
 		return bad(errors.New("stale service epoch or invalid request ID"))
@@ -566,6 +611,20 @@ func (s *Service) broker(h *Home, g *Generation) (*Broker, error) {
 }
 
 func (s *Service) acquire(ctx context.Context, b *Broker, h *Home, g *Generation, artifact string) (receipt Receipt, err error) {
+	slot, err := s.reserveSlot(h, g, artifact)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if slot != nil {
+		defer func() {
+			claim := s.journal.Slots[slot.Stage]
+			claim.State = "retained"
+			if err != nil {
+				claim.State = "quarantined"
+			}
+			s.journal.Slots[slot.Stage] = claim
+		}()
+	}
 	binding := RunBinding{RunID: g.RunID, LeaseID: g.LeaseID, Generation: g.ID}
 	plan, release, err := s.config.Production(h.ID, artifact, binding)
 	if release != nil {
@@ -581,6 +640,17 @@ func (s *Service) acquire(ctx context.Context, b *Broker, h *Home, g *Generation
 	}
 	if release == nil || plan.Binding.RunID != binding.RunID || plan.Binding.LeaseID != binding.LeaseID || plan.Binding.Generation != binding.Generation {
 		return Receipt{}, errors.New("acquisition does not own this service run/lease/generation")
+	}
+	if slot != nil {
+		var limit int64
+		for _, volume := range s.config.Storage.Volumes {
+			if volume.Root == slot.Volume {
+				limit = volume.LimitBytes
+			}
+		}
+		if plan.Stage != slot.Stage || plan.Volume != slot.Volume || plan.CapacityBytes != limit {
+			return Receipt{}, errors.New("acquisition differs from protected slot registry")
+		}
 	}
 	production, err := b.StartProduction(ctx, artifact, plan)
 	if err != nil {

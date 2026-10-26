@@ -53,17 +53,8 @@ func run(ctx context.Context, path string) error {
 	if err := d.Decode(&cfg); err != nil {
 		return err
 	}
-	if _, err := cachebrokerlab.ServiceTLS(cfg.Control, true); err != nil {
-		return err
-	}
-	if runtime.GOOS == "windows" {
-		log, err := os.OpenFile(filepath.Join(cfg.Control, "service.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-		if err != nil {
-			return err
-		}
-		// SCM does not provide a console. Keep this process-lifetime handle open
-		// so main can also record a startup failure before the OS closes it.
-		os.Stdout, os.Stderr = log, log
+	if cfg.Service.Storage == nil || cfg.Service.Storage.Control != cfg.Control {
+		return errors.New("service control must use the registered bounded volume")
 	}
 	// Fault input is a protected bootstrap file, absent in normal operation.
 	// No IPC request can arm it; this binary is excluded from production builds.
@@ -110,5 +101,16 @@ func run(ctx context.Context, path string) error {
 		return err
 	}
 	defer s.Close()
+	if _, err := cachebrokerlab.ServiceTLS(cfg.Control, true); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		log, err := os.OpenFile(filepath.Join(cfg.Control, "service.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			return err
+		}
+		// SCM has no console. Diagnostics share the registered finite volume.
+		os.Stdout, os.Stderr = log, log
+	}
 	return cachebrokerlab.ServeService(ctx, s, cfg.Control)
 }

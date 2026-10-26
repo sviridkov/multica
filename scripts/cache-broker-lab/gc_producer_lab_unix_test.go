@@ -21,6 +21,15 @@ func nativeProducerQuotaError(err error) bool {
 	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT)
 }
 
+func nativeStorageAvailable(t *testing.T, path string) int64 {
+	t.Helper()
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(path, &fs); err != nil {
+		t.Fatal(err)
+	}
+	return int64(fs.Bavail) * int64(fs.Bsize)
+}
+
 func nativeProducerDiagnostics(d *nativeRuntimeDomain) string {
 	out, err := exec.Command("/bin/ps", "-U", strconv.FormatUint(uint64(d.id.UID), 10), "-o", "pid=,ppid=,ruid=,uid=,stat=,comm=").CombinedOutput()
 	return fmt.Sprintf("RUID=%d ps_error=%v processes=%s", d.id.UID, err, out)
