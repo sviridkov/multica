@@ -1,0 +1,56 @@
+name: Cache broker native experiment
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - server/internal/daemon/cachebrokerlab/**
+      - scripts/cache-broker-lab/**
+      - .github/workflows/cache-broker-lab.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: cache-broker (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "~1.26.9"
+          cache-dependency-path: server/go.sum
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Pinned Rust toolchain in disposable runner
+        run: rustup toolchain install 1.95.0 --profile minimal --component rust-src
+      - name: Build pinned producer and test-only Multica integration
+        run: python scripts/cache-broker-lab/build.py --output native-build
+      - name: Native macOS identity and cycles
+        if: runner.os == 'macOS'
+        run: bash scripts/cache-broker-lab/native-macos.sh "${{ github.workspace }}/native-build"
+      - name: Native Windows identity and cycles
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/cache-broker-lab/native-windows.ps1 -BuildDir "${{ github.workspace }}\native-build"
+      - name: Preserve native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-broker-${{ runner.os }}
+          path: |
+            native-build/build-provenance.json
+            native-build/native.log
+            native-build/native-identity.log
+          if-no-files-found: warn
