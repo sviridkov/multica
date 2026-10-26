@@ -95,6 +95,13 @@ func startProducer(t *testing.T, cfg nativeLab, recipe cachebrokerlab.Policy, vo
 		}
 	})
 	waitRuntimeFile(t, filepath.Join(control, "leader-finished"))
+	state, err := os.ReadFile(filepath.Join(control, "leader-finished"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "physical-quota" && string(state) != "producer success" {
+		t.Fatalf("acquisition did not reach the publication probe: %s", state)
+	}
 	return p
 }
 func (p *producerProcess) request(t *testing.T, operation string) producerReply {
@@ -386,7 +393,8 @@ func TestBrokerProducerRecovery(t *testing.T) {
 	if ok, err := s.Quiescent(c.Binding); err == nil || ok {
 		t.Fatal("restart manufactured native proof")
 	}
-	if err = s.Launch(c.Binding, &exec.Cmd{}, &producerNeverDomain{}); err == nil {
+	domain := &producerNeverDomain{}
+	if err = s.Launch(c.Binding, &exec.Cmd{}, domain); err == nil || domain.started {
 		t.Fatal("restart replayed producer")
 	}
 	if b, err := cachebrokerlab.Open(c.Recipe); err == nil {
@@ -409,9 +417,12 @@ func TestBrokerProducerRecovery(t *testing.T) {
 	}
 }
 
-type producerNeverDomain struct{}
+type producerNeverDomain struct{ started bool }
 
-func (*producerNeverDomain) Start(*exec.Cmd) error   { return fmt.Errorf("must not launch") }
+func (d *producerNeverDomain) Start(*exec.Cmd) error {
+	d.started = true
+	return fmt.Errorf("must not launch")
+}
 func (*producerNeverDomain) Active() (uint32, error) { return 0, fmt.Errorf("no native proof") }
 
 type nativeProducerDomain struct {
@@ -424,6 +435,11 @@ func (d *nativeProducerDomain) Start(cmd *exec.Cmd) error {
 	// The measured trampoline only adds failure/descendant probes around the
 	// real pinned producer, under the same inherited identity and containment.
 	cmd.Env = append(cmd.Env, "MULTICA_PRODUCER_BINARY="+cmd.Path, "MULTICA_PRODUCER_STAGE="+d.config.Stage, "MULTICA_PRODUCER_DEST="+d.config.Recipe.Root, "MULTICA_PRODUCER_CONTROL="+d.config.Control, "MULTICA_PRODUCER_MODE="+d.config.Mode)
+	// TestMain creates its isolated home before the worker creates stage/tmp.
+	// The already existing stage keeps that bootstrap inside the same quota.
+	for _, key := range []string{"TMPDIR", "TEMP", "TMP"} {
+		cmd.Env = append(cmd.Env, key+"="+d.config.Stage)
+	}
 	cmd.Path = d.exe
 	cmd.Args = []string{d.exe, "-test.run=^TestBrokerProducerWorker$"}
 	return d.inner.Start(cmd)
@@ -516,6 +532,7 @@ func TestBrokerProducerWorker(t *testing.T) {
 		cmd := exec.Command(exe, "-test.run=^TestBrokerProducerForker$")
 		cmd.Env = os.Environ()
 		cmd.Dir = stage
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		nativeRuntimeDetach(cmd)
 		if err = cmd.Run(); err != nil {
 			t.Fatal(err)
@@ -537,6 +554,7 @@ func TestBrokerProducerForker(t *testing.T) {
 	cmd := exec.Command(exe, "-test.run=^TestBrokerProducerDescendant$")
 	cmd.Env = os.Environ()
 	cmd.Dir = stage
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	nativeRuntimeDetach(cmd)
 	if err = cmd.Start(); err != nil {
 		t.Fatal(err)

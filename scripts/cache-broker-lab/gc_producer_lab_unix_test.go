@@ -30,7 +30,7 @@ func nativeProducerVolume(t *testing.T, cfg nativeLab) string {
 	if err = os.Mkdir(mount, 0755); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"create", "-size", "128m", "-fs", "APFS", "-format", "UDRW", "-volname", "CacheProducerStage", image}, {"attach", "-nobrowse", "-owners", "on", "-mountpoint", mount, image}} {
+	for _, args := range [][]string{{"create", "-size", "128m", "-fs", "APFS", "-type", "UDIF", "-nospotlight", "-volname", "CacheProducerStage", image}, {"attach", "-nobrowse", "-owners", "on", "-mountpoint", mount, image}} {
 		if out, err := exec.Command("/usr/bin/hdiutil", args...).CombinedOutput(); err != nil {
 			t.Fatalf("bounded staging volume: %v %s", err, out)
 		}
