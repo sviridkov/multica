@@ -431,3 +431,43 @@ func TestPollIntervalRoundTripThroughDuration(t *testing.T) {
 		t.Fatalf("parsed = %v, want %v", got, want)
 	}
 }
+
+func TestConfigCompletedTaskTTL(t *testing.T) {
+	redirectTestHome(t, t.TempDir())
+	cmd := newConfigTestCmd()
+	if err := cmd.Flags().Set("profile", "gc-retention"); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"72h", "3d", "0", ""} {
+		if err := runConfigSet(cmd, []string{"gc_completed_task_ttl", value}); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := cli.LoadCLIConfigForProfile("gc-retention")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value == "" {
+			if cfg.GCCompletedTaskTTL != nil {
+				t.Fatal("clear did not remove override")
+			}
+		} else if cfg.GCCompletedTaskTTL == nil || *cfg.GCCompletedTaskTTL != value {
+			t.Fatalf("value not persisted: %v", cfg.GCCompletedTaskTTL)
+		}
+		other, err := cli.LoadCLIConfigForProfile("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if other.GCCompletedTaskTTL != nil {
+			t.Fatal("setting leaked to default profile")
+		}
+	}
+	for _, value := range []string{"-1h", "72", "garbage", "9999999999999999999h"} {
+		cfg := cli.CLIConfig{}
+		if err := applyConfigSet(&cfg, "gc_completed_task_ttl", value); err == nil {
+			t.Fatalf("invalid %q accepted", value)
+		}
+		if cfg.GCCompletedTaskTTL != nil {
+			t.Fatal("invalid input mutated config")
+		}
+	}
+}

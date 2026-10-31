@@ -118,7 +118,7 @@ type Config struct {
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
 	GCInterval                     time.Duration         // how often the GC loop runs (default: 2h)
 	GCTTL                          time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
-	GCCompletedTaskTTL             time.Duration         // fully clean inactive issue-task envs completed at least this long ago, regardless of parent issue status (default: 14d on Multica Cloud, 0/disabled elsewhere; local_directory envs are never fully removed)
+	GCCompletedTaskTTL             time.Duration         // make inactive issue-task envs eligible for empty-root cleanup after this age, regardless of parent issue status (default: 14d on Multica Cloud, 0/disabled elsewhere; local_directory envs are never fully removed)
 	GCOrphanTTL                    time.Duration         // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
 	GCArtifactTTL                  time.Duration         // once a task has been completed for at least this long, drop regenerable artifacts: pattern-matched build outputs when the parent record keeps the directory (an open issue), and the exact daemon-managed Codex cache for every task kind (default: 12h, set 0 to disable both)
 	GCArtifactPatterns             []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
@@ -235,29 +235,30 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// consumer (probe, buildEnv, child processes) on the existing code path
 	// without inventing a new plumbing channel.
 	//
-	// Errors loading CLIConfig are non-fatal: a missing or malformed config
-	// file should not prevent daemon startup, since the daemon can still run
-	// purely from env-var configuration. We log a warning and proceed with
-	// no overrides.
+	// Retention now lives here too: silently ignoring an unreadable profile
+	// could enable a destructive default the operator explicitly disabled.
+	cliCfg, err := cli.LoadCLIConfigForProfile(overrides.Profile)
+	if err != nil {
+		return Config{}, fmt.Errorf("load daemon profile %q: %w", overrides.Profile, err)
+	}
+	gcCompletedTaskTTL, err := completedTaskTTL(cliCfg.GCCompletedTaskTTL, serverBaseURL)
+	if err != nil {
+		return Config{}, err
+	}
 	var profileCommandOverrides map[string]string
-	if cliCfg, err := cli.LoadCLIConfigForProfile(overrides.Profile); err != nil {
-		slog.Warn("could not load CLI config for backend overrides; proceeding without",
-			"profile", overrides.Profile, "err", err)
-	} else {
-		if oc := openclawOverrideFrom(cliCfg); oc != nil {
-			applyOpenclawOverride(oc)
-		}
-		// Per-machine custom-runtime command path overrides (MUL-3284).
-		// Copy into our own map so later mutation of the loaded config can't
-		// alias daemon state, and so an empty map normalizes to nil.
-		if len(cliCfg.ProfileCommandOverrides) > 0 {
-			profileCommandOverrides = make(map[string]string, len(cliCfg.ProfileCommandOverrides))
-			for id, path := range cliCfg.ProfileCommandOverrides {
-				if id == "" || strings.TrimSpace(path) == "" {
-					continue
-				}
-				profileCommandOverrides[id] = path
+	if oc := openclawOverrideFrom(cliCfg); oc != nil {
+		applyOpenclawOverride(oc)
+	}
+	// Per-machine custom-runtime command path overrides (MUL-3284).
+	// Copy into our own map so later mutation of the loaded config can't
+	// alias daemon state, and so an empty map normalizes to nil.
+	if len(cliCfg.ProfileCommandOverrides) > 0 {
+		profileCommandOverrides = make(map[string]string, len(cliCfg.ProfileCommandOverrides))
+		for id, path := range cliCfg.ProfileCommandOverrides {
+			if id == "" || strings.TrimSpace(path) == "" {
+				continue
 			}
+			profileCommandOverrides[id] = path
 		}
 	}
 
@@ -539,7 +540,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		healthPort = overrides.HealthPort
 	}
 
-	// GC config: env > defaults
+	// GC config: env > defaults (completed-task TTL also reads the profile above).
 	gcEnabled := true
 	if v := os.Getenv("MULTICA_GC_ENABLED"); v == "false" || v == "0" {
 		gcEnabled = false
@@ -549,10 +550,6 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		return Config{}, err
 	}
 	gcTTL, err := durationFromEnv("MULTICA_GC_TTL", DefaultGCTTL)
-	if err != nil {
-		return Config{}, err
-	}
-	gcCompletedTaskTTL, err := durationFromEnv("MULTICA_GC_COMPLETED_TASK_TTL", defaultGCCompletedTaskTTL(serverBaseURL))
 	if err != nil {
 		return Config{}, err
 	}
@@ -689,18 +686,42 @@ func isOfficialCloudServer(baseURL string) bool {
 	return strings.EqualFold(u.Hostname(), officialCloudHost)
 }
 
+// ParseGCCompletedTaskTTL accepts duration syntax shared by profile and env,
+// including days. Zero disables this policy; negative ages are invalid.
+func ParseGCCompletedTaskTTL(value string) (time.Duration, error) {
+	d, err := parseFlexDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid completed-task TTL %q: %w", value, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("completed-task TTL must be non-negative, got %q", value)
+	}
+	return d, nil
+}
+
+func completedTaskTTL(profileValue *string, serverURL string) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv("MULTICA_GC_COMPLETED_TASK_TTL"))
+	source := "MULTICA_GC_COMPLETED_TASK_TTL"
+	if value == "" {
+		if profileValue == nil {
+			return defaultGCCompletedTaskTTL(serverURL), nil
+		}
+		value = *profileValue
+		source = "profile gc_completed_task_ttl"
+	}
+	d, err := ParseGCCompletedTaskTTL(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", source, err)
+	}
+	return d, nil
+}
+
 // defaultGCCompletedTaskTTL picks the completed-task retention default from the
 // deployment kind, the same way the auto-update default is picked.
 //
-// Full removal of a completed task environment is irreversible: it takes the
-// checkout, .git (including work an agent left uncommitted), output/ and logs/
-// with it. On Multica Cloud that trade is ours to make — we operate the nodes,
-// a full disk is our incident rather than a user's, and unbounded retention has
-// no operator watching it. On self-host the same default would turn a routine
-// daemon upgrade into a silent deletion of data the operator never agreed to
-// give up, so it stays disabled until they set MULTICA_GC_COMPLETED_TASK_TTL
-// themselves. Either side can override in either direction; cloud disables it
-// again with an explicit 0.
+// These defaults control eligibility, not permission to discard task work.
+// Empty-root preservation checks apply on both deployments. Keep the existing
+// cloud 14-day and self-host disabled defaults; env/profile can override either.
 //
 // Non-production cloud origins (staging, previews) fall to the self-host value
 // along with everything else officialCloudHost excludes, and opt in explicitly

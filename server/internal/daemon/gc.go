@@ -441,10 +441,9 @@ func (d *Daemon) shouldCleanTaskDir(ctx context.Context, taskDir string) gcActio
 // session stays "active" with no time limit and Desktop's chat is the main
 // interactive surface (#6782).
 //
-// Deliberately a one-way upgrade from gcActionSkip. Clean and Orphan already
-// remove strictly more than this, and applyLocalDirectoryGCOverride owns the
-// demotions in the other direction — so this can only ever widen what a cycle
-// reclaims, never narrow it.
+// Deliberately a one-way upgrade from gcActionSkip. Clean and Orphan attempt
+// empty-root cleanup with their own content guards; this helper does not widen
+// those policies. applyLocalDirectoryGCOverride owns their demotions.
 //
 // Note this also fires when the GC check API call itself failed (a transient
 // network error resolves to gcActionSkip). That is intended: the cache is
@@ -891,28 +890,22 @@ func (d *Daemon) gcTaskDirOwner(taskDir string) (*execenv.EnvRootOwner, error) {
 	return &validated, nil
 }
 
-// cleanTaskDir removes a proven daemon-owned task directory, logs the
-// reclaimed bytes, and returns that count for the cycle summary. A failed or
-// refused removal reports removed=false.
+// cleanTaskDir removes only owned, empty task scaffolding. Eligibility by age
+// or parent status is never proof that task work is disposable.
 func (d *Daemon) cleanTaskDir(taskDir string) (bytes int64, removed bool) {
-	// Measure first, prove ownership second. dirSize walks the entire tree,
-	// which on a large task directory takes long enough for the validated
-	// directory to be replaced underneath us — checking before that walk would
-	// hand RemoveAll a path last proven ours tens of seconds earlier. This is
-	// the defense-in-depth check, so it sits immediately before the removal.
-	bytes = dirSize(taskDir)
-	owner, ownerErr := d.gcTaskDirOwner(taskDir)
-	if ownerErr != nil {
-		d.logger.Warn("gc: refusing to remove unowned task directory", "dir", taskDir, "error", ownerErr)
+	plan, err := inspectEmptyTaskRoot(d.cfg.WorkspacesRoot, taskDir)
+	if err != nil {
+		d.logger.Info("gc: retaining task directory", "dir", taskDir, "reason", err)
 		return 0, false
 	}
-	if err := os.RemoveAll(taskDir); err != nil {
-		d.logger.Warn("gc: remove task dir failed", "dir", taskDir, "error", err)
+	defer plan.close()
+	bytes, err = plan.remove()
+	if err != nil {
+		d.logger.Warn("gc: empty task cleanup refused or failed", "dir", taskDir, "error", err)
 		return 0, false
-	} else {
-		d.logger.Info("gc: removed", "dir", taskDir, "bytes_reclaimed", bytes)
 	}
-	if err := execenv.RemoveRootDirRecord(d.cfg.WorkspacesRoot, taskDir, *owner); err != nil {
+	d.logger.Info("gc: removed", "dir", taskDir, "bytes_reclaimed", bytes)
+	if err := execenv.RemoveRootDirRecord(d.cfg.WorkspacesRoot, taskDir, plan.owner); err != nil {
 		d.logger.Warn("gc: remove stable task root record failed", "dir", taskDir, "error", err)
 	}
 	return bytes, true

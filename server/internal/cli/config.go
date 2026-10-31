@@ -55,6 +55,11 @@ type CLIConfig struct {
 	// profile-aware built-in default.
 	WorkspacesRoot string `json:"workspaces_root,omitempty"`
 
+	// GCCompletedTaskTTL is the profile's completed-task retention duration.
+	// nil uses the cloud/self-host default; "0" disables age-based eligibility.
+	// MULTICA_GC_COMPLETED_TASK_TTL takes precedence at daemon startup.
+	GCCompletedTaskTTL *string `json:"gc_completed_task_ttl,omitempty"`
+
 	// MaxConcurrentTasks caps the number of task executions the daemon
 	// processes in parallel. Persist here to avoid re-passing
 	// --max-concurrent-tasks on every daemon start / auto-restart. 0 means
@@ -323,6 +328,18 @@ func LoadCLIConfigForProfile(profile string) (CLIConfig, error) {
 	var cfg CLIConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return CLIConfig{}, fmt.Errorf("parse CLI config: %w", err)
+	}
+	// A present null is not a duration. Missing and explicit zero have
+	// different retention meanings, so do not silently substitute a default.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return CLIConfig{}, fmt.Errorf("parse CLI config: %w", err)
+	}
+	if fields == nil {
+		return CLIConfig{}, errors.New("CLI config must be a JSON object")
+	}
+	if _, present := fields["gc_completed_task_ttl"]; present && cfg.GCCompletedTaskTTL == nil {
+		return CLIConfig{}, errors.New("gc_completed_task_ttl must be a duration string, not null")
 	}
 	return cfg, nil
 }
