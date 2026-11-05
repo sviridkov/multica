@@ -17,7 +17,7 @@ import (
 // Whole-root GC has no proof that a checkout, transcript or result can be
 // reconstructed. Only empty scaffolding and understood identity metadata may
 // be removed. In particular, clean/pushed Git and an old .task_lock are retained.
-type emptyTaskRoot struct {
+type gcTaskRoot struct {
 	base, parent, root   *os.Root
 	basePath, workspace  string
 	baseInfo, parentInfo os.FileInfo
@@ -26,6 +26,8 @@ type emptyTaskRoot struct {
 	owner                execenv.EnvRootOwner
 	files                map[string]gcControlFile
 	dirs                 map[string]os.FileInfo
+	meta                 *execenv.GCMeta
+	retained             string
 }
 
 type gcControlFile struct {
@@ -33,7 +35,7 @@ type gcControlFile struct {
 	data []byte
 }
 
-func (p *emptyTaskRoot) close() {
+func (p *gcTaskRoot) close() {
 	p.root.Close()
 	p.parent.Close()
 	p.base.Close()
@@ -100,7 +102,7 @@ func decodeGCControl(data []byte, value any) error {
 	return nil
 }
 
-func inspectEmptyTaskRoot(workspacesRoot, taskDir string) (_ *emptyTaskRoot, err error) {
+func inspectTaskRoot(workspacesRoot, taskDir string) (_ *gcTaskRoot, err error) {
 	rel, err := filepath.Rel(workspacesRoot, taskDir)
 	if err != nil {
 		return nil, err
@@ -129,7 +131,7 @@ func inspectEmptyTaskRoot(workspacesRoot, taskDir string) (_ *emptyTaskRoot, err
 		base.Close()
 		return nil, err
 	}
-	p := &emptyTaskRoot{
+	p := &gcTaskRoot{
 		base: base, parent: parent, root: root,
 		basePath: workspacesRoot, workspace: parts[0], name: parts[1],
 		baseInfo: baseInfo, parentInfo: parentInfo, info: info,
@@ -164,13 +166,22 @@ func inspectEmptyTaskRoot(workspacesRoot, taskDir string) (_ *emptyTaskRoot, err
 				return nil, readErr
 			}
 			if len(children) != 0 {
-				return nil, fmt.Errorf("%s contains retained work or artifacts", name)
+				p.retained = fmt.Sprintf("%s contains retained work or artifacts", name)
 			}
 			p.dirs[name] = subInfo
 		default:
-			return nil, fmt.Errorf("retained entry %s has no whole-root reclamation contract", name)
+			info, statErr := root.Lstat(name)
+			if statErr != nil {
+				return nil, statErr
+			}
+			if info.Mode()&linkedDirModes != 0 {
+				return nil, fmt.Errorf("retained entry %s is a link or irregular file", name)
+			}
+			p.retained = fmt.Sprintf("retained entry %s has no whole-root reclamation contract", name)
 		}
 	}
+	// Content retention is not validation failure. Validate every control file
+	// before allowing either whole-root removal or artifact-only fallback.
 	ownerFile, ok := p.files[".task_owner"]
 	if !ok {
 		return nil, errors.New("task owner is missing")
@@ -202,6 +213,7 @@ func inspectEmptyTaskRoot(workspacesRoot, taskDir string) (_ *emptyTaskRoot, err
 		default:
 			return nil, errors.New("unknown GC metadata kind")
 		}
+		p.meta = &meta
 	}
 	if err := execenv.ValidateEnvRootOwnerPath(workspacesRoot, taskDir, p.owner); err != nil {
 		return nil, err
@@ -209,7 +221,7 @@ func inspectEmptyTaskRoot(workspacesRoot, taskDir string) (_ *emptyTaskRoot, err
 	return p, nil
 }
 
-func (p *emptyTaskRoot) revalidate() error {
+func (p *gcTaskRoot) revalidateIdentity() error {
 	baseInfo, err := os.Stat(p.basePath)
 	if err != nil {
 		return err
@@ -228,6 +240,29 @@ func (p *emptyTaskRoot) revalidate() error {
 	if current.Mode()&linkedDirModes != 0 || !os.SameFile(p.info, current) {
 		return errors.New("task root identity changed")
 	}
+	for _, name := range []string{".task_owner", ".gc_meta.json"} {
+		file, existed := p.files[name]
+		current, err := readGCControl(p.root, name)
+		if !existed && errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !existed || !os.SameFile(file.info, current.info) || !bytes.Equal(file.data, current.data) {
+			return fmt.Errorf("%s changed", name)
+		}
+	}
+	return nil
+}
+
+func (p *gcTaskRoot) revalidate() error {
+	if p.retained != "" {
+		return errors.New(p.retained)
+	}
+	if err := p.revalidateIdentity(); err != nil {
+		return err
+	}
 	entries, err := fs.ReadDir(p.root.FS(), ".")
 	if err != nil {
 		return err
@@ -237,14 +272,8 @@ func (p *emptyTaskRoot) revalidate() error {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if file, ok := p.files[name]; ok {
-			current, err := readGCControl(p.root, name)
-			if err != nil {
-				return err
-			}
-			if !os.SameFile(file.info, current.info) || !bytes.Equal(file.data, current.data) {
-				return fmt.Errorf("%s changed", name)
-			}
+		if _, ok := p.files[name]; ok {
+			continue // Control bytes and identity were checked above.
 		} else if info, ok := p.dirs[name]; ok {
 			sub, current, err := openGCSubdir(p.root, name)
 			if err != nil {
@@ -267,7 +296,7 @@ func (p *emptyTaskRoot) revalidate() error {
 
 // remove is called under the daemon's env-root reservation. Individual rmdir
 // operations cannot recursively consume files created after inspection.
-func (p *emptyTaskRoot) remove() (reclaimed int64, err error) {
+func (p *gcTaskRoot) remove() (reclaimed int64, err error) {
 	removedFiles := map[string]gcControlFile{}
 	defer func() {
 		if err == nil {

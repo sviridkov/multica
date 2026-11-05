@@ -71,7 +71,7 @@ func TestWholeTaskGCProtectsGitHistory(t *testing.T) {
 			}
 			before := runGitForGC(t, "", "-C", repo, "show-ref")
 			status := runGitForGC(t, "", "-C", repo, "status", "--porcelain")
-			if _, removed := d.cleanTaskDir(root); removed {
+			if _, removed := d.cleanTaskDir(context.Background(), root, gcActionClean, &gcStats{}); removed {
 				t.Fatal("Git checkout was deleted")
 			}
 			if got := runGitForGC(t, "", "-C", repo, "show-ref"); got != before {
@@ -136,7 +136,7 @@ func TestWholeTaskGCRejectsUncertainMetadata(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, ".gc_meta.json"), []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, removed := d.cleanTaskDir(root); removed {
+			if _, removed := d.cleanTaskDir(context.Background(), root, gcActionClean, &gcStats{}); removed {
 				t.Fatal("uncertain metadata deleted")
 			}
 		})
@@ -151,7 +151,7 @@ func TestWholeTaskGCRevalidatesBeforeRemoval(t *testing.T) {
 			if err := os.Mkdir(filepath.Join(root, "workdir"), 0700); err != nil {
 				t.Fatal(err)
 			}
-			plan, err := inspectEmptyTaskRoot(d.cfg.WorkspacesRoot, root)
+			plan, err := inspectTaskRoot(d.cfg.WorkspacesRoot, root)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -245,7 +245,7 @@ func TestWholeTaskGCRefusesLinksAndOutsidePaths(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, removed := d.cleanTaskDir(root); removed {
+			if _, removed := d.cleanTaskDir(context.Background(), root, gcActionClean, &gcStats{}); removed {
 				t.Fatal("uncertain path was removed")
 			}
 			if _, err := os.Lstat(root); err != nil {
@@ -293,11 +293,11 @@ func TestWholeTaskGCRetainsHeldAndReleasedLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer claim.Release()
-	if _, removed := d.cleanTaskDir(claim.RootDir()); removed {
+	if _, removed := d.cleanTaskDir(context.Background(), claim.RootDir(), gcActionClean, &gcStats{}); removed {
 		t.Fatal("held lock root removed")
 	}
 	claim.Release()
-	if _, removed := d.cleanTaskDir(claim.RootDir()); removed {
+	if _, removed := d.cleanTaskDir(context.Background(), claim.RootDir(), gcActionClean, &gcStats{}); removed {
 		t.Fatal("released lock is still retained conservatively")
 	}
 }
@@ -317,7 +317,7 @@ func TestWholeTaskGCReservationBlocksResume(t *testing.T) {
 		t.Fatal("resume entered during reservation")
 	case <-time.After(20 * time.Millisecond):
 	}
-	if _, removed := d.cleanTaskDir(root); !removed {
+	if _, removed := d.cleanTaskDir(context.Background(), root, gcActionClean, &gcStats{}); !removed {
 		release()
 		t.Fatal("safe reserved root not removed")
 	}

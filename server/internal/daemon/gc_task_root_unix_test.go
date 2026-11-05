@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func TestWholeTaskGCInspectionErrorPreservesRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(root, 0700)
-	if _, removed := d.cleanTaskDir(root); removed {
+	if _, removed := d.cleanTaskDir(context.Background(), root, gcActionClean, &gcStats{}); removed {
 		t.Fatal("unreadable root removed")
 	}
 }
@@ -45,7 +46,7 @@ func TestWholeTaskGCRemovalErrorRestoresMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(filepath.Dir(root), 0700)
-	if n, removed := d.cleanTaskDir(root); removed || n != 0 {
+	if n, removed := d.cleanTaskDir(context.Background(), root, gcActionClean, &gcStats{}); removed || n != 0 {
 		t.Fatalf("failed removal counted: %d %v", n, removed)
 	}
 	for name, want := range before {

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,7 +19,7 @@ func TestWholeTaskGCRejectsWindowsJunction(t *testing.T) {
 		t.Skipf("junction creation unavailable: %v %s", err, output)
 	}
 	defer os.Remove(link)
-	if _, removed := d.cleanTaskDir(root); removed {
+	if _, removed := d.cleanTaskDir(context.Background(), root, gcActionClean, &gcStats{}); removed {
 		t.Fatal("junction-containing root removed")
 	}
 	if info, err := os.Stat(filepath.Join(target, "result.md")); err != nil || info.Size() != 41 {

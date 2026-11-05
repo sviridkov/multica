@@ -344,7 +344,7 @@ func (d *Daemon) applyGCAction(ctx context.Context, taskDir string, action gcAct
 	}
 	switch action {
 	case gcActionClean:
-		bytes, removed := d.cleanTaskDir(taskDir)
+		bytes, removed := d.cleanTaskDir(ctx, taskDir, action, stats)
 		if !removed {
 			stats.skipped++
 			return 0
@@ -353,7 +353,7 @@ func (d *Daemon) applyGCAction(ctx context.Context, taskDir string, action gcAct
 		stats.bytesReclaimed += bytes
 		return 1
 	case gcActionOrphan:
-		bytes, removed := d.cleanTaskDir(taskDir)
+		bytes, removed := d.cleanTaskDir(ctx, taskDir, action, stats)
 		if !removed {
 			stats.skipped++
 			return 0
@@ -442,8 +442,8 @@ func (d *Daemon) shouldCleanTaskDir(ctx context.Context, taskDir string) gcActio
 // interactive surface (#6782).
 //
 // Deliberately a one-way upgrade from gcActionSkip. Clean and Orphan attempt
-// empty-root cleanup with their own content guards; this helper does not widen
-// those policies. applyLocalDirectoryGCOverride owns their demotions.
+// empty-root cleanup; cleanRetainedTaskArtifacts separately preserves eligible
+// artifact cleanup when verified content retains a root.
 //
 // Note this also fires when the GC check API call itself failed (a transient
 // network error resolves to gcActionSkip). That is intended: the cache is
@@ -892,13 +892,18 @@ func (d *Daemon) gcTaskDirOwner(taskDir string) (*execenv.EnvRootOwner, error) {
 
 // cleanTaskDir removes only owned, empty task scaffolding. Eligibility by age
 // or parent status is never proof that task work is disposable.
-func (d *Daemon) cleanTaskDir(taskDir string) (bytes int64, removed bool) {
-	plan, err := inspectEmptyTaskRoot(d.cfg.WorkspacesRoot, taskDir)
+func (d *Daemon) cleanTaskDir(ctx context.Context, taskDir string, action gcAction, stats *gcStats) (bytes int64, removed bool) {
+	plan, err := inspectTaskRoot(d.cfg.WorkspacesRoot, taskDir)
 	if err != nil {
 		d.logger.Info("gc: retaining task directory", "dir", taskDir, "reason", err)
 		return 0, false
 	}
 	defer plan.close()
+	if plan.retained != "" {
+		d.logger.Info("gc: retaining task directory", "dir", taskDir, "reason", plan.retained)
+		d.cleanRetainedTaskArtifacts(ctx, taskDir, action, plan, stats)
+		return 0, false
+	}
 	bytes, err = plan.remove()
 	if err != nil {
 		d.logger.Warn("gc: empty task cleanup refused or failed", "dir", taskDir, "error", err)
@@ -909,6 +914,66 @@ func (d *Daemon) cleanTaskDir(taskDir string) (bytes int64, removed bool) {
 		d.logger.Warn("gc: remove stable task root record failed", "dir", taskDir, "error", err)
 	}
 	return bytes, true
+}
+
+// A content-retained root still has the existing artifact contract. Inspection
+// or removal errors never reach this path. Keep the reservation held by
+// applyGCAction, validate control identity again, and respect the artifact clock
+// independently of the policy that selected whole-root cleanup.
+func (d *Daemon) cleanRetainedTaskArtifacts(ctx context.Context, taskDir string, action gcAction, plan *gcTaskRoot, stats *gcStats) {
+	if d.cfg.GCArtifactTTL <= 0 || ctx.Err() != nil {
+		return
+	}
+	managedOnly := action == gcActionOrphan
+	if plan.meta != nil && !plan.meta.CompletedAt.IsZero() {
+		if time.Since(plan.meta.CompletedAt) <= d.cfg.GCArtifactTTL {
+			return
+		}
+	} else {
+		// No completion signal: preserve the legacy, exact-managed-only policy.
+		info := plan.info
+		if file, ok := plan.files[".gc_meta.json"]; ok {
+			info = file.info
+		}
+		age := time.Since(info.ModTime())
+		if age <= d.cfg.GCOrphanTTL || age <= d.cfg.GCArtifactTTL {
+			return
+		}
+		managedOnly = true
+	}
+	if info, err := plan.root.Lstat(".task_lock"); err == nil {
+		if !info.Mode().IsRegular() {
+			return
+		}
+		claim, lockedRoot, err := execenv.LockEnvRootForReuse(plan.parent, plan.name, taskDir)
+		if err != nil {
+			d.logger.Info("gc: retaining artifacts because task lock is unavailable", "dir", taskDir, "reason", err)
+			return
+		}
+		defer claim.Release()
+		if claim == nil || !os.SameFile(plan.info, lockedRoot) {
+			return
+		}
+		current, err := plan.root.Lstat(".task_lock")
+		if err != nil || !os.SameFile(info, current) {
+			return
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err := plan.revalidateIdentity(); err != nil {
+		d.logger.Warn("gc: retaining artifacts because task identity changed", "dir", taskDir, "error", err)
+		return
+	}
+	var removed int
+	var bytes int64
+	var perPattern map[string]int
+	if managedOnly {
+		removed, bytes, perPattern = d.cleanManagedTaskArtifacts(taskDir)
+	} else {
+		removed, bytes, perPattern = d.cleanTaskArtifacts(ctx, taskDir, d.cfg.GCArtifactPatterns)
+	}
+	recordArtifactCleanup(stats, removed, bytes, perPattern)
 }
 
 // linkedDirModes are the mode bits that mark a directory entry as a link to
