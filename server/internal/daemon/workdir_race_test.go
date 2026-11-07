@@ -830,6 +830,9 @@ func TestHandleTask_KeepsEnvRootActiveAcrossCompletion(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/complete") {
 			completeCalled.Store(true)
+			if _, err := os.Stat(filepath.Join(expectedEnvRoot, ".gc_meta.json")); !os.IsNotExist(err) {
+				t.Errorf("completion metadata must be published after reporting: %v", err)
+			}
 			// This is the exact window race B exposed: the inner deferred
 			// unmark has already fired (see fake runner below); only the
 			// outer guard installed by handleTask keeps the env root in the
@@ -850,6 +853,9 @@ func TestHandleTask_KeepsEnvRootActiveAcrossCompletion(t *testing.T) {
 		predicted := execenv.PredictRootDir(taskRootDirParams(d.cfg.WorkspacesRoot, tk))
 		d.markActiveEnvRoot(predicted)
 		defer d.unmarkActiveEnvRoot(predicted)
+		if err := os.MkdirAll(predicted, 0700); err != nil {
+			return TaskResult{}, err
+		}
 		return TaskResult{
 			Status:  "completed",
 			EnvRoot: predicted,
@@ -871,6 +877,13 @@ func TestHandleTask_KeepsEnvRootActiveAcrossCompletion(t *testing.T) {
 	}
 	if !activeAtComplete.Load() {
 		t.Fatal("env root was NOT in the active set at /complete time — issue #3999 race B regression: GC could reclaim the directory between runner.run returning and WriteGCMeta landing on disk")
+	}
+	meta, err := execenv.ReadGCMeta(expectedEnvRoot)
+	if err != nil {
+		t.Fatalf("completion metadata was not published before handler return: %v", err)
+	}
+	if meta.IssueID != task.IssueID || meta.CompletedAt.IsZero() {
+		t.Fatalf("unexpected completion metadata: %+v", meta)
 	}
 	// And the outer guard must have been released by the time handleTask
 	// returned, otherwise we'd be leaking active marks across tasks.

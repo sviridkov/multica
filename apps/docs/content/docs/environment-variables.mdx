@@ -278,9 +278,9 @@ The daemon periodically cleans up run directories, repository caches, session re
 |---|---|---|
 | `MULTICA_GC_ENABLED` | `true` | Set to `false` or `0` to turn the whole cleanup loop off |
 | `MULTICA_GC_INTERVAL` | `2h` | Time between cleanup passes; the first pass runs about 30 seconds after the daemon starts |
-| `MULTICA_GC_TTL` | `24h` | How long after an issue enters the `done` or `closed` category, or a chat session is archived, its run directories are removed |
-| `MULTICA_GC_COMPLETED_TASK_TTL` | Multica Cloud `14d`; self-hosted `0` | How long after an issue run completes its whole directory is removed, whether or not the issue is closed; `0` turns this off. Does not apply to runs on a project's local directory |
-| `MULTICA_GC_ORPHAN_TTL` | `72h` | How long a directory with no owner found must go unchanged before it is removed |
+| `MULTICA_GC_TTL` | `24h` | Age threshold after an issue enters the `done` or `closed` category, or a chat is archived; whole-root cleanup still requires a verified empty environment |
+| `MULTICA_GC_COMPLETED_TASK_TTL` | Multica Cloud `14d`; self-hosted `0` | Age threshold for empty-root cleanup after an issue run completes, whether or not the issue is closed; `0` disables this policy. Env overrides profile `gc_completed_task_ttl`, then the default. Work and local-directory environments are retained |
+| `MULTICA_GC_ORPHAN_TTL` | `72h` | Age threshold for orphan cleanup; removal still requires a valid task owner and verified empty contents |
 | `MULTICA_GC_ARTIFACT_TTL` | `12h` | How long after a run completes regenerable content is removed (the directories in the next row plus the cache the daemon prepares for Codex); `0` keeps it |
 | `MULTICA_GC_ARTIFACT_PATTERNS` | `node_modules,.next,.turbo` | Directory names treated as regenerable, comma-separated. Setting it **replaces** the default list, so include the defaults if you still want them; entries containing `/` or `\` are ignored |
 | `MULTICA_GC_REPO_TTL` | `30d` | How long a bare repository cache that is no longer referenced and has no worktrees must go without a checkout before it is removed; `0` keeps it |
@@ -289,6 +289,22 @@ The daemon periodically cleans up run directories, repository caches, session re
 | `MULTICA_GC_HERMES_SESSION_TTL` | `14d` | How long Hermes session records stay unused before removal; `0` keeps them |
 | `MULTICA_GC_HERMES_MEMORY_TTL` | `90d` | How long Hermes memory stays unused before removal; `0` keeps it |
 | `MULTICA_GC_TASK_TEMP_LEGACY_TTL` | `0` | Only for temporary directories left by older daemons without a run lock: how long they must go unchanged before removal. `0` keeps them. Temporary directories with a run lock are removed when the run ends and are unaffected |
+
+Persist completed-task retention for a Desktop or CLI daemon using its existing profile:
+
+```bash
+multica --profile desktop-api.multica.ai config set gc_completed_task_ttl 72h
+```
+
+This writes `gc_completed_task_ttl` in `~/.multica/profiles/<profile>/config.json`; the default profile uses `~/.multica/config.json`. The daemon reads it on startup, including when launched by Desktop. No shell export or `launchctl setenv` is needed. An inherited nonempty `MULTICA_GC_COMPLETED_TASK_TTL` wins over the profile value; the profile wins over the unchanged cloud `336h` / self-hosted `0` defaults. Other TTLs are unaffected. Task-local CLI configuration remains isolated under `MULTICA_TASK_CONFIG_ROOT`.
+
+Durations must parse and be non-negative; `0` disables completed-task age eligibility. Invalid values or an unreadable/malformed profile fail startup with an error, rather than silently selecting a default. Use `config set gc_completed_task_ttl ""` to clear the persisted override, then start the daemon normally. To roll back, restore the previous value (or clear it if previously absent) and remove any overriding environment value. Changes take effect on the next safe daemon start; check `completed_task_ttl` in `gc: started`. A process-level test of this loader does not verify an operating-system login or Desktop restart.
+
+Whole-root cleanup preserves all Git checkouts, output, logs and unknown contents, even if Git is clean and pushed. It removes only an owned root containing validated identity metadata and empty `workdir`, `output`, and `logs` directories. A `.task_lock` also retains the root even after release; its presence alone does not establish liveness. Most previously executed environments will therefore remain. A result file itself retains its environment, so no additional pin marker is necessary.
+
+Keeping a root for its content still permits eligible artifact cleanup after `MULTICA_GC_ARTIFACT_TTL`, including after the completed-task or terminal TTL. Orphan roots and legacy roots without a completion timestamp allow only exact managed paths; legacy age must exceed both the artifact and orphan TTLs. Invalid metadata, ownership/path errors, an active run or a held task lock prevent this fallback. No additional cache paths are introduced.
+
+Use one daemon per workspaces root, and route all task writers through its lifecycle. Independent tools must not replace task roots or `.task_owner`, `.gc_meta.json`, and `.task_lock` while cleanup is enabled. Stop the daemon and task processes before manual repair; tools requiring unrestricted concurrent writes need a separate root or `MULTICA_GC_ENABLED=false`. The daemon coordinates its own starts and completion writes, but control-file validation and removal are not atomic against arbitrary external replacements. Restoring a removed control file does not recover replacement bytes lost in that interval. The code-level writer contract and verification paths are in `server/internal/daemon/GC_SAFETY.md`.
 
 ### Daemon logs [#daemon-logs]
 

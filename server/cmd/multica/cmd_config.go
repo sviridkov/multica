@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon"
 )
 
 var configCmd = &cobra.Command{
@@ -42,6 +43,7 @@ var configSetSupportedKeys = []string{
 	"agent_timeout",
 	"agent_idle_watchdog",
 	"agent_tool_watchdog",
+	"gc_completed_task_ttl",
 	"codex_semantic_inactivity_timeout",
 	"codex_handshake_timeout",
 	"disable_auto_update",
@@ -55,11 +57,11 @@ var configSetCmd = &cobra.Command{
 	Long: "Supported keys: " +
 		"server_url, app_url, workspace_id, " +
 		"device_name, runtime_name, workspaces_root, max_concurrent_tasks, poll_interval, ws_claim_poll_interval, " +
-		"heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, " +
+		"heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, gc_completed_task_ttl, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
 		"disable_auto_update, auto_update_check_interval, disable_auto_reload.\n\n" +
 		"The daemon keys (device_name, runtime_name, workspaces_root, max_concurrent_tasks, " +
-		"poll_interval, ws_claim_poll_interval, heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, " +
+		"poll_interval, ws_claim_poll_interval, heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, gc_completed_task_ttl, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
 		"disable_auto_update, auto_update_check_interval, disable_auto_reload) mirror their " +
 		"--flag / env counterparts and are read by `daemon start` when " +
@@ -67,7 +69,8 @@ var configSetCmd = &cobra.Command{
 		"Precedence: --flag > MULTICA_… env > config.json > built-in default. " +
 		"Duration keys take a Go duration (e.g. '10s', '500ms', '1m30s'); " +
 		"most keys require a positive value, while agent_timeout, agent_idle_watchdog, " +
-		"and agent_tool_watchdog also accept '0s' to disable their limit. " +
+		"agent_tool_watchdog, and gc_completed_task_ttl also accept '0s' to disable their policy. " +
+		"gc_completed_task_ttl also accepts days (e.g. '3d'), has no flag, and is read directly at daemon startup. " +
 		"disable_auto_update and disable_auto_reload take 'true' or 'false' " +
 		"(single-direction: setting one to 'true' turns that behavior off, " +
 		"'false' clears the override so env/default decides). Pass an empty " +
@@ -110,6 +113,7 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "agent_timeout:", agentTimeoutDisplay(cfg.AgentTimeout))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "agent_idle_watchdog:", valueOrDefault(cfg.AgentIdleWatchdog, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "agent_tool_watchdog:", valueOrDefault(cfg.AgentToolWatchdog, "(not set)"))
+	fmt.Fprintf(os.Stdout, "%-34s %s\n", "gc_completed_task_ttl:", agentTimeoutDisplay(cfg.GCCompletedTaskTTL))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "codex_semantic_inactivity_timeout:", valueOrDefault(cfg.CodexSemanticInactivityTimeout, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "codex_handshake_timeout:", valueOrDefault(cfg.CodexHandshakeTimeout, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %t\n", "disable_auto_update:", cfg.DisableAutoUpdate)
@@ -219,8 +223,17 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 		if err := assignPositiveDuration(&cfg.HeartbeatInterval, key, value); err != nil {
 			return err
 		}
+	case "gc_completed_task_ttl":
+		if value == "" {
+			cfg.GCCompletedTaskTTL = nil
+			return nil
+		}
+		if _, err := daemon.ParseGCCompletedTaskTTL(value); err != nil {
+			return err
+		}
+		cfg.GCCompletedTaskTTL = &value
 	case "agent_timeout":
-		// agent_timeout is the one duration knob where "0s" is a
+		// agent_timeout also treats "0s" as a
 		// meaningful persisted value (it explicitly disables the
 		// wall-clock cap; see cli.CLIConfig.AgentTimeout). Store the raw
 		// string via a pointer so we can distinguish "not set" (nil)

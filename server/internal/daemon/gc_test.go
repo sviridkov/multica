@@ -205,6 +205,15 @@ func TestRunGC_MixedLayoutsUseMetadataWorkspaceIdentity(t *testing.T) {
 		TaskID: "22222222-ee7a-4603-a72d-b659c34a1dc3", CompletedAt: time.Now().Add(-10 * 24 * time.Hour),
 	})
 
+	// Readable paths carry full identities in their owner marker, as production does.
+	owner, err := json.Marshal(execenv.EnvRootOwner{WorkspaceID: workspaceID, TaskID: "22222222-ee7a-4603-a72d-b659c34a1dc3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readableDir, ".task_owner"), owner, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	d.runGC(context.Background())
 
 	if batchRequests != 2 {
@@ -516,7 +525,7 @@ func TestShouldCleanTaskDir_Issue404RecentSkipped(t *testing.T) {
 	}
 }
 
-func TestCleanTaskDir_RemovesDirectory(t *testing.T) {
+func TestCleanTaskDir_PreservesPayload(t *testing.T) {
 	t.Parallel()
 	d := newGCTestDaemon(t, http.NewServeMux())
 	taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws1", "doomed", nil)
@@ -526,12 +535,11 @@ func TestCleanTaskDir_RemovesDirectory(t *testing.T) {
 		t.Fatal("task dir should exist before cleanup")
 	}
 
-	if bytes, removed := d.cleanTaskDir(taskDir); !removed || bytes < 64 {
-		t.Fatalf("reclaimed bytes = %d, want at least payload size", bytes)
+	if bytes, removed := d.cleanTaskDir(context.Background(), taskDir, gcActionClean, &gcStats{}); removed || bytes != 0 {
+		t.Fatalf("payload was reclaimed: removed=%v bytes=%d", removed, bytes)
 	}
-
-	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
-		t.Fatal("task dir should be removed after cleanup")
+	if info, err := os.Stat(filepath.Join(taskDir, "workdir", "payload.bin")); err != nil || info.Size() != 64 {
+		t.Fatalf("payload was not preserved: %v", err)
 	}
 }
 
@@ -633,7 +641,7 @@ func TestCleanTaskDir_RefusesOwnerPathMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if bytes, removed := d.cleanTaskDir(taskDir); removed || bytes != 0 {
+	if bytes, removed := d.cleanTaskDir(context.Background(), taskDir, gcActionClean, &gcStats{}); removed || bytes != 0 {
 		t.Fatalf("cleanTaskDir removed owner/path mismatch: removed=%v bytes=%d", removed, bytes)
 	}
 	if _, err := os.Stat(survivor); err != nil {
@@ -659,11 +667,8 @@ func TestCleanTaskDir_AcceptsLegacyOwnerWithGCWorkspaceIdentity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(taskDir, ".gc_meta.json"), meta, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(taskDir, "payload"), []byte("owned"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
-	if _, removed := d.cleanTaskDir(taskDir); !removed {
+	if _, removed := d.cleanTaskDir(context.Background(), taskDir, gcActionClean, &gcStats{}); !removed {
 		t.Fatal("legacy task owner with matching GC workspace identity was not removed")
 	}
 	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
@@ -675,21 +680,30 @@ func TestCleanTaskDir_RemovesStableRootRecord(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	params := execenv.PrepareParams{
+	params := execenv.RootDirParams{
 		WorkspacesRoot:  root,
 		WorkspaceID:     "a05b0e10-ee7a-4603-a72d-a548b2390cb2",
 		WorkspaceSlug:   "Asset Feed",
 		TaskID:          "5c57b65b-ee7a-4603-a72d-b659c34a1dc3",
 		IssueIdentifier: "MUL-6063",
-		AgentName:       "GC Identity",
 	}
-	env, err := execenv.Prepare(params, slog.Default())
+	original, err := execenv.ResolveRootDir(params)
 	if err != nil {
-		t.Fatalf("Prepare: %v", err)
+		t.Fatal(err)
 	}
-	original := env.RootDir
+	// A stranded, owned empty root, before execution creates .task_lock.
+	if err := os.MkdirAll(original, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := json.Marshal(execenv.EnvRootOwner{WorkspaceID: params.WorkspaceID, TaskID: params.TaskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(original, ".task_owner"), owner, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	d := &Daemon{cfg: Config{WorkspacesRoot: root}, logger: slog.Default()}
-	if bytes, removed := d.cleanTaskDir(original); !removed || bytes <= 0 {
+	if bytes, removed := d.cleanTaskDir(context.Background(), original, gcActionClean, &gcStats{}); !removed || bytes <= 0 {
 		t.Fatalf("reclaimed bytes = %d, want owner metadata bytes", bytes)
 	}
 
@@ -797,7 +811,7 @@ func TestGCWorkspace_BatchesAndDeduplicatesIssueChecks(t *testing.T) {
 	}
 }
 
-func TestGCWorkspace_CompletedTaskTTLRemovesOpenIssue(t *testing.T) {
+func TestGCWorkspace_CompletedTaskTTLPreservesOpenIssueWork(t *testing.T) {
 	t.Parallel()
 	issueID := "77777777-7777-7777-7777-777777777770"
 
@@ -823,11 +837,11 @@ func TestGCWorkspace_CompletedTaskTTLRemovesOpenIssue(t *testing.T) {
 	stats := &gcStats{byPattern: map[string]int{}}
 	d.gcWorkspace(context.Background(), wsDir, stats)
 
-	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
-		t.Fatalf("completed open-issue task dir should be removed, stat error = %v", err)
+	if info, err := os.Stat(filepath.Join(taskDir, "workdir", "checkout.bin")); err != nil || info.Size() != 128 {
+		t.Fatalf("completed open-issue work was not retained: %v", err)
 	}
-	if stats.cleaned != 1 || stats.skipped != 0 || stats.bytesReclaimed < 128 {
-		t.Fatalf("unexpected stats after completed-task cleanup: %+v", stats)
+	if stats.cleaned != 0 || stats.skipped != 1 || stats.bytesReclaimed != 0 {
+		t.Fatalf("unexpected stats after completed-task preservation: %+v", stats)
 	}
 }
 
