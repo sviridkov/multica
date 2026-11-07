@@ -41,6 +41,8 @@ var configSetSupportedKeys = []string{
 	"ws_claim_poll_interval",
 	"heartbeat_interval",
 	"agent_timeout",
+	"agent_idle_watchdog",
+	"agent_tool_watchdog",
 	"gc_completed_task_ttl",
 	"codex_semantic_inactivity_timeout",
 	"codex_handshake_timeout",
@@ -55,19 +57,20 @@ var configSetCmd = &cobra.Command{
 	Long: "Supported keys: " +
 		"server_url, app_url, workspace_id, " +
 		"device_name, runtime_name, workspaces_root, max_concurrent_tasks, poll_interval, ws_claim_poll_interval, " +
-		"heartbeat_interval, agent_timeout, gc_completed_task_ttl, " +
+		"heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, gc_completed_task_ttl, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
 		"disable_auto_update, auto_update_check_interval, disable_auto_reload.\n\n" +
 		"The daemon keys (device_name, runtime_name, workspaces_root, max_concurrent_tasks, " +
-		"poll_interval, ws_claim_poll_interval, heartbeat_interval, agent_timeout, gc_completed_task_ttl, " +
+		"poll_interval, ws_claim_poll_interval, heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, gc_completed_task_ttl, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
 		"disable_auto_update, auto_update_check_interval, disable_auto_reload) mirror their " +
 		"--flag / env counterparts and are read by `daemon start` when " +
 		"neither the flag nor the env var is set. " +
 		"Precedence: --flag > MULTICA_… env > config.json > built-in default. " +
-		"Duration keys take a positive Go duration (e.g. '10s', '500ms', '1m30s'); " +
-		"'0s' and negative values are rejected — except agent_timeout and gc_completed_task_ttl, where " +
-		"'0s' explicitly disables that policy. gc_completed_task_ttl also accepts days (e.g. '3d'), has no flag, and is read directly at daemon startup. " +
+		"Duration keys take a Go duration (e.g. '10s', '500ms', '1m30s'); " +
+		"most keys require a positive value, while agent_timeout, agent_idle_watchdog, " +
+		"agent_tool_watchdog, and gc_completed_task_ttl also accept '0s' to disable their policy. " +
+		"gc_completed_task_ttl also accepts days (e.g. '3d'), has no flag, and is read directly at daemon startup. " +
 		"disable_auto_update and disable_auto_reload take 'true' or 'false' " +
 		"(single-direction: setting one to 'true' turns that behavior off, " +
 		"'false' clears the override so env/default decides). Pass an empty " +
@@ -108,6 +111,8 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "ws_claim_poll_interval:", valueOrDefault(cfg.WSClaimPollInterval, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "heartbeat_interval:", valueOrDefault(cfg.HeartbeatInterval, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "agent_timeout:", agentTimeoutDisplay(cfg.AgentTimeout))
+	fmt.Fprintf(os.Stdout, "%-34s %s\n", "agent_idle_watchdog:", valueOrDefault(cfg.AgentIdleWatchdog, "(not set)"))
+	fmt.Fprintf(os.Stdout, "%-34s %s\n", "agent_tool_watchdog:", valueOrDefault(cfg.AgentToolWatchdog, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "gc_completed_task_ttl:", agentTimeoutDisplay(cfg.GCCompletedTaskTTL))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "codex_semantic_inactivity_timeout:", valueOrDefault(cfg.CodexSemanticInactivityTimeout, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "codex_handshake_timeout:", valueOrDefault(cfg.CodexHandshakeTimeout, "(not set)"))
@@ -246,6 +251,14 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 		}
 		s := value
 		cfg.AgentTimeout = &s
+	case "agent_idle_watchdog":
+		if err := assignNonNegativeDuration(&cfg.AgentIdleWatchdog, key, value); err != nil {
+			return err
+		}
+	case "agent_tool_watchdog":
+		if err := assignNonNegativeDuration(&cfg.AgentToolWatchdog, key, value); err != nil {
+			return err
+		}
 	case "codex_semantic_inactivity_timeout":
 		if err := assignPositiveDuration(&cfg.CodexSemanticInactivityTimeout, key, value); err != nil {
 			return err
@@ -303,6 +316,23 @@ func assignPositiveDuration(dst *string, key, value string) error {
 	}
 	if d <= 0 {
 		return fmt.Errorf("%s must be positive (got %s); use `config set %s \"\"` to clear it", key, d, key)
+	}
+	*dst = normalized
+	return nil
+}
+
+func assignNonNegativeDuration(dst *string, key, value string) error {
+	if value == "" {
+		*dst = ""
+		return nil
+	}
+	normalized := strings.TrimSpace(value)
+	d, err := time.ParseDuration(normalized)
+	if err != nil {
+		return fmt.Errorf("%s must be a Go duration (e.g. 15m, 0s): %w", key, err)
+	}
+	if d < 0 {
+		return fmt.Errorf("%s must be >= 0 (got %s); use `config set %s \"\"` to clear it", key, d, key)
 	}
 	*dst = normalized
 	return nil
