@@ -55,7 +55,7 @@ a test-owned provider and the terminal dispositions, not every real provider.
 The other control-file writers are `claimEnvRoot` / `LockEnvRootForReuse`
 (`.task_lock` creation), `writeEnvRootOwner` (temporary owner file and rename),
 and `resetEnvRootContents` (removes old metadata while holding a fresh claim).
-GC's `taskRootPlan.remove` removes control files and can restore their inspected
+GC's `gcTaskRoot.remove` removes control files and can restore their inspected
 bytes with exclusive creation. Preparation also writes `.managed_env.json`,
 which is retained content for whole-root GC. Task temporary directories have a
 separate lock publication and cleanup lifecycle in `execenv/task_temp.go`; they
