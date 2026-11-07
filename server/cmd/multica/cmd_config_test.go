@@ -495,3 +495,47 @@ func TestConfigCompletedTaskTTL(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigCompletedTaskTTLAndWatchdogsStayIndependent(t *testing.T) {
+	redirectTestHome(t, t.TempDir())
+	cmd := newConfigTestCmd()
+	if err := cmd.Flags().Set("profile", "gc-and-watchdogs"); err != nil {
+		t.Fatal(err)
+	}
+	for _, setting := range [][2]string{
+		{"agent_idle_watchdog", "2m"},
+		{"agent_tool_watchdog", "0s"},
+		{"gc_completed_task_ttl", "72h"},
+	} {
+		if err := runConfigSet(cmd, setting[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := captureStdout(t, func() error { return runConfigShow(cmd, nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"gc_completed_task_ttl:", "agent_idle_watchdog:", "agent_tool_watchdog:"} {
+		if !strings.Contains(out, key) {
+			t.Fatalf("config show omitted %s: %s", key, out)
+		}
+	}
+	for _, ttl := range []string{"0", ""} {
+		if err := runConfigSet(cmd, []string{"gc_completed_task_ttl", ttl}); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := cli.LoadCLIConfigForProfile("gc-and-watchdogs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.AgentIdleWatchdog != "2m" || cfg.AgentToolWatchdog != "0s" {
+			t.Fatalf("TTL change overwrote watchdogs: idle=%q tool=%q", cfg.AgentIdleWatchdog, cfg.AgentToolWatchdog)
+		}
+		if ttl == "" && cfg.GCCompletedTaskTTL != nil {
+			t.Fatal("TTL override was not cleared")
+		}
+		if ttl == "0" && (cfg.GCCompletedTaskTTL == nil || *cfg.GCCompletedTaskTTL != "0") {
+			t.Fatal("explicitly disabled TTL was lost")
+		}
+	}
+}

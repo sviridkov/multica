@@ -42,6 +42,39 @@ task lifecycle before enabling cleanup in a new integration; a successful
 single-process test is not evidence that an arbitrary external writer obeys
 this contract.
 
+Server terminal status is not the end of the handler's writes. The completion
+path deliberately reports the result before `WriteGCMeta`; shutdown reporting
+can also use a context that outlives cancellation. Quiescence means the handler
+has returned, its preparation/agent children have been reaped, and its active
+marks and claims have been released. The completion regression
+`TestHandleTask_KeepsEnvRootActiveAcrossCompletion` checks that metadata is absent
+at the report, the root is still active there, and metadata exists when the
+handler returns and the active mark is gone. The shutdown regressions exercise
+a test-owned provider and the terminal dispositions, not every real provider.
+
+The other control-file writers are `claimEnvRoot` / `LockEnvRootForReuse`
+(`.task_lock` creation), `writeEnvRootOwner` (temporary owner file and rename),
+and `resetEnvRootContents` (removes old metadata while holding a fresh claim).
+GC's `taskRootPlan.remove` removes control files and can restore their inspected
+bytes with exclusive creation. Preparation also writes `.managed_env.json`,
+which is retained content for whole-root GC. Task temporary directories have a
+separate lock publication and cleanup lifecycle in `execenv/task_temp.go`; they
+do not establish ownership of a workspaces root.
+
+`TestGCReservationDoesNotExcludeExternalWriter` runs a child process that writes
+metadata into a synthetic root while this daemon holds its GC reservation. The
+child exits and is reaped; revalidation then detects the changed metadata and
+preserves it. This demonstrates the reservation's process boundary and detection
+before validation. It does not exercise or eliminate the later unlink race.
+
+For an integration probe, use a newly created canonical root, fixture HOME and
+profile, outside live roots and archives. Run only synthetic tests and config
+commands there. An empty root and a process snapshot cannot establish future
+writer exclusion. Until that exclusion is enforced (for example, a dedicated
+OS principal/container with no external writable mount, plus supervised child
+lifetimes) and independently accepted, leave GC disabled for a future rollout.
+Root separation by itself under the same user does not enforce the contract.
+
 ## What the filesystem checks guarantee
 
 Inspection pins the workspace and task directories, rejects linked roots and
