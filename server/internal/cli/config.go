@@ -21,6 +21,9 @@ const (
 
 // CLIConfig holds persistent CLI settings.
 type CLIConfig struct {
+	unknown  configFields
+	snapshot *configSnapshot
+
 	ServerURL   string `json:"server_url,omitempty"`
 	AppURL      string `json:"app_url,omitempty"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
@@ -54,6 +57,11 @@ type CLIConfig struct {
 	// --workspaces-root flag, MULTICA_WORKSPACES_ROOT env, this field, the
 	// profile-aware built-in default.
 	WorkspacesRoot string `json:"workspaces_root,omitempty"`
+
+	// GCCompletedTaskTTL is the profile's completed-task retention duration.
+	// nil uses the cloud/self-host default; "0" disables age-based eligibility.
+	// MULTICA_GC_COMPLETED_TASK_TTL takes precedence at daemon startup.
+	GCCompletedTaskTTL *string `json:"gc_completed_task_ttl,omitempty"`
 
 	// MaxConcurrentTasks caps the number of task executions the daemon
 	// processes in parallel. Persist here to avoid re-passing
@@ -175,10 +183,9 @@ type CLIConfig struct {
 // BackendOverrides holds per-backend configuration overrides. Each field is
 // optional; nil means "no override for this backend". Keep new fields additive
 // and tagged with `json:",omitempty"` so empty values do not change the saved
-// config shape. Unknown-key preservation is a separate forward-compat concern:
-// Go's encoding/json drops fields that are not represented in this struct on
-// load/save round-trip (see TestCLIConfig_UnknownFieldsArePreserved).
+// config shape. Unknown fields at each typed object level survive load/save.
 type BackendOverrides struct {
+	unknown  configFields
 	OpenClaw *OpenClawOverride `json:"openclaw,omitempty"`
 }
 
@@ -212,6 +219,7 @@ type BackendOverrides struct {
 // for GUI-launched daemons. With this field, those workarounds become
 // unnecessary.
 type OpenClawOverride struct {
+	unknown    configFields
 	BinaryPath string `json:"binary_path,omitempty"`
 	StateDir   string `json:"state_dir,omitempty"`
 	// CLITimeout raises (or lowers) the per-invocation deadline the daemon
@@ -323,7 +331,7 @@ func LoadCLIConfigForProfile(profile string) (CLIConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return CLIConfig{}, nil
+			return CLIConfig{snapshot: &configSnapshot{path: path}}, nil
 		}
 		return CLIConfig{}, fmt.Errorf("read CLI config: %w", err)
 	}
@@ -331,6 +339,10 @@ func LoadCLIConfigForProfile(profile string) (CLIConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return CLIConfig{}, fmt.Errorf("parse CLI config: %w", err)
 	}
+	if err := validateConfigSettings(cfg); err != nil {
+		return CLIConfig{}, err
+	}
+	cfg.snapshot = &configSnapshot{path: path, exists: true, data: data}
 	return cfg, nil
 }
 
@@ -339,7 +351,12 @@ func SaveCLIConfig(cfg CLIConfig) error {
 	return SaveCLIConfigForProfile(cfg, "")
 }
 
-// SaveCLIConfigForProfile writes the CLI config for the given profile.
+// SaveCLIConfigForProfile publishes a loaded snapshot if it is still current.
+// A config not obtained from LoadCLIConfigForProfile can only create a profile.
+// Cooperating writers hold a stable sidecar lock through recheck and rename.
+// On ErrCLIConfigConflict callers must reload and reapply the intended edit;
+// retrying the stale value cannot succeed. Uncooperative external writers are
+// outside this contract (a filesystem check is not an atomic compare-and-swap).
 func SaveCLIConfigForProfile(cfg CLIConfig, profile string) error {
 	path, err := CLIConfigPathForProfile(profile)
 	if err != nil {
@@ -371,21 +388,46 @@ func SaveCLIConfigForProfile(cfg CLIConfig, profile string) error {
 			}
 		}
 	}
+	lock, err := lockCLIConfig(filepath.Join(dir, ".config.lock"))
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	current, err := os.ReadFile(path)
+	exists := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read current CLI config: %w", err)
+	}
+	if !cfg.matchesSnapshot(path, current, exists) {
+		return ErrCLIConfigConflict
+	}
+	return publishCLIConfig(path, cfg)
+}
+
+func publishCLIConfig(path string, cfg CLIConfig) error {
+	if err := validateConfigSettings(cfg); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode CLI config: %w", err)
 	}
 
 	// Write to a temp file in the same directory, then rename for atomicity.
-	tmp, err := os.CreateTemp(dir, ".config-*.json.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.json.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp config file: %w", err)
 	}
 	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("write temp config file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temp config file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)

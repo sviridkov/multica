@@ -23,6 +23,7 @@ import type {
 } from "../shared/daemon-types";
 import { daemonStatusAlive } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
+import { readDesktopProfileConfig, writeDesktopProfileConfig } from "./daemon-profile-config";
 import { decideVersionAction } from "./version-decision";
 import { createDaemonQuitHandler } from "./daemon-quit";
 import { quitConfirmationOptions, quitFailureOptions } from "./daemon-quit-dialogs";
@@ -128,12 +129,6 @@ const lifecycleOperations = new DaemonOperationGate();
 let startingSince: number | null = null;
 let authProbeDone = false;
 let authExpired = false;
-
-// Serialize all writes to any profile config file. Multiple paths
-// (syncToken, resolveActiveProfile, clearToken, watch/unwatch handlers)
-// may try to write concurrently; chaining them avoids interleaved writes
-// corrupting the JSON.
-let configWriteChain: Promise<void> = Promise.resolve();
 
 async function readProfileUserId(profile: string): Promise<string | null> {
   try {
@@ -258,33 +253,17 @@ async function probeTokenValidity(profile: string): Promise<AuthProbeResult> {
   }
 }
 
-async function readProfileConfig(
-  profile: string,
-): Promise<Record<string, unknown>> {
-  try {
-    const raw = await readFile(profileConfigPath(profile), "utf-8");
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
+async function readProfileConfig(profile: string) {
+  return readDesktopProfileConfig(profileConfigPath(profile));
 }
 
 async function writeProfileConfig(
   profile: string,
-  cfg: Record<string, unknown>,
+  config: Awaited<ReturnType<typeof readProfileConfig>>,
 ): Promise<void> {
-  const op = async () => {
-    await mkdir(profileDir(profile), { recursive: true });
-    await writeFile(
-      profileConfigPath(profile),
-      JSON.stringify(cfg, null, 2),
-      "utf-8",
-    );
-  };
-  const next = configWriteChain.catch(() => {}).then(op);
-  configWriteChain = next.catch(() => {});
-  return next;
+  const binary = await resolveCliBinary();
+  if (!binary) throw new Error("CLI unavailable; profile was not changed");
+  await writeDesktopProfileConfig(binary, profile, profileConfigPath(profile), config);
 }
 
 /**

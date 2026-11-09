@@ -28,7 +28,11 @@ func TestPersistSelfHostConfigIfReachable(t *testing.T) {
 			t.Fatalf("seed config: %v", err)
 		}
 
-		proceed, err := persistSelfHostConfigIfReachable(
+		cfg, err := cli.LoadCLIConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		proceed, err := persistSelfHostConfigIfReachable(cfg,
 			"https://api.new.example", "https://new.example", "",
 			func(string) bool { return false },
 		)
@@ -54,7 +58,11 @@ func TestPersistSelfHostConfigIfReachable(t *testing.T) {
 	t.Run("reachable server writes new self-host config", func(t *testing.T) {
 		redirectTestHome(t, t.TempDir())
 
-		proceed, err := persistSelfHostConfigIfReachable(
+		cfg, err := cli.LoadCLIConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		proceed, err := persistSelfHostConfigIfReachable(cfg,
 			"https://api.new.example", "https://new.example", "",
 			func(string) bool { return true },
 		)

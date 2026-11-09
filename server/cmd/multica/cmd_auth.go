@@ -370,7 +370,10 @@ func runAuthLoginBrowser(cmd *cobra.Command) error {
 	// Save to config. Reset workspace data on every login — the user or
 	// server may have changed, so stale workspaces must not persist.
 	profile := resolveProfile(cmd)
-	cfg, _ := cli.LoadCLIConfigForProfile(profile)
+	cfg, err := cli.LoadCLIConfigForProfile(profile)
+	if err != nil {
+		return err
+	}
 	cfg.WorkspaceID = ""
 	cfg.Token = patResp.Token
 	cfg.ServerURL = serverURL
@@ -471,7 +474,10 @@ func runAuthLoginToken(cmd *cobra.Command, providedToken string) error {
 	}
 
 	profile := resolveProfile(cmd)
-	cfg, _ := cli.LoadCLIConfigForProfile(profile)
+	cfg, err := cli.LoadCLIConfigForProfile(profile)
+	if err != nil {
+		return err
+	}
 	cfg.WorkspaceID = ""
 	cfg.Token = token
 	cfg.ServerURL = serverURL
@@ -575,7 +581,10 @@ func runAuthLogout(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	profile := resolveProfile(cmd)
-	cfg, _ := cli.LoadCLIConfigForProfile(profile)
+	cfg, err := cli.LoadCLIConfigForProfile(profile)
+	if err != nil {
+		return err
+	}
 	if cfg.Token == "" {
 		fmt.Fprintln(os.Stderr, "Not authenticated.")
 		return nil

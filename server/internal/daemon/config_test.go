@@ -1845,12 +1845,10 @@ func TestLoadConfig_BackendOverrides_BackwardCompat_NoConfigFile(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_BackendOverrides_MalformedConfigFileNonFatal verifies the
-// fail-soft contract documented inline in LoadConfig: a corrupt config.json
-// must not prevent daemon startup. This matters for diskcorruption /
-// partial-write recovery — the daemon should log and proceed using
-// env-var-only configuration.
-func TestLoadConfig_BackendOverrides_MalformedConfigFileNonFatal(t *testing.T) {
+// Invalid config must not silently restore a GC default when the profile
+// could have explicitly disabled or extended retention.
+
+func TestLoadConfig_MalformedProfileFailsClosed(t *testing.T) {
 	stageFakeAgent(t)
 	homeDir := t.TempDir()
 	redirectTestHome(t, homeDir)
@@ -1868,12 +1866,9 @@ func TestLoadConfig_BackendOverrides_MalformedConfigFileNonFatal(t *testing.T) {
 		ServerURL:      "http://localhost:8080",
 		WorkspacesRoot: t.TempDir(),
 	})
-	if err != nil {
-		t.Fatalf("LoadConfig should not fail on malformed config.json: %v", err)
+	if err == nil {
+		t.Fatal("LoadConfig silently ignored a malformed retention profile")
 	}
-	// Should also have logged a slog Warn — we don't assert on the log
-	// output here (avoids brittle string matching), but the build does
-	// make sure log/slog stays imported.
 }
 
 // agentKeys is a tiny helper to make agent-map missing-key error messages

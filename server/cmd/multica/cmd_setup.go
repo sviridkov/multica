@@ -99,15 +99,15 @@ func printConfigLocation(profile string) {
 // overwriting it. newServerURL/newAppURL are the values setup is about to
 // write; they are shown as "old -> new" when they differ from the current
 // config so the user can see the passed flags/env were received rather than
-// silently ignored. Returns true if we should proceed, false if the user
-// declined.
-func confirmOverwrite(profile, newServerURL, newAppURL string) (bool, error) {
+// silently ignored. Returns the observed snapshot and whether the user agreed;
+// saving that snapshot later rejects edits made during confirmation or probing.
+func confirmOverwrite(profile, newServerURL, newAppURL string) (cli.CLIConfig, bool, error) {
 	cfg, err := cli.LoadCLIConfigForProfile(profile)
 	if err != nil {
-		return true, nil // can't load → treat as no config
+		return cli.CLIConfig{}, false, err
 	}
 	if cfg.ServerURL == "" {
-		return true, nil // no server configured → fresh config
+		return cfg, true, nil // no server configured → fresh config
 	}
 
 	fmt.Fprintln(os.Stderr, "Current configuration:")
@@ -124,9 +124,9 @@ func confirmOverwrite(profile, newServerURL, newAppURL string) (bool, error) {
 	answer = strings.TrimSpace(strings.ToLower(answer))
 	if answer != "y" && answer != "yes" {
 		fmt.Fprintln(os.Stderr, "Aborted.")
-		return false, nil
+		return cfg, false, nil
 	}
-	return true, nil
+	return cfg, true, nil
 }
 
 // formatURLChange renders "old -> new" when setup is about to change the value,
@@ -144,18 +144,16 @@ func runSetupCloud(cmd *cobra.Command, args []string) error {
 	}
 	profile := resolveProfile(cmd)
 
-	cfg := cli.CLIConfig{
-		ServerURL: defaultCloudServerURL,
-		AppURL:    defaultCloudAppURL,
-	}
-
-	ok, err := confirmOverwrite(profile, cfg.ServerURL, cfg.AppURL)
+	cfg, ok, err := confirmOverwrite(profile, defaultCloudServerURL, defaultCloudAppURL)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return nil
 	}
+
+	cfg.ResetSettings()
+	cfg.ServerURL, cfg.AppURL = defaultCloudServerURL, defaultCloudAppURL
 
 	if err := cli.SaveCLIConfigForProfile(cfg, profile); err != nil {
 		return fmt.Errorf("save config: %w", err)
@@ -219,7 +217,7 @@ func runSetupSelfHost(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	ok, err := confirmOverwrite(profile, serverURL, appURL)
+	cfg, ok, err := confirmOverwrite(profile, serverURL, appURL)
 	if err != nil {
 		return err
 	}
@@ -231,7 +229,7 @@ func runSetupSelfHost(cmd *cobra.Command, args []string) error {
 	// working config or wipe the saved token: persistSelfHostConfigIfReachable
 	// writes only when the server answers, so an unreachable host leaves the
 	// existing config untouched and the user stays logged in.
-	reachable, err := persistSelfHostConfigIfReachable(serverURL, appURL, profile, probeServer)
+	reachable, err := persistSelfHostConfigIfReachable(cfg, serverURL, appURL, profile, probeServer)
 	if err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
@@ -337,14 +335,12 @@ func daemonActiveTaskCount(health map[string]any) int64 {
 // clobbers a working config (the original ordering saved first, then probed,
 // then bailed — wiping the token on every failed probe). The prober is injected
 // so tests can exercise both branches without real network I/O.
-func persistSelfHostConfigIfReachable(serverURL, appURL, profile string, probe func(string) bool) (bool, error) {
+func persistSelfHostConfigIfReachable(cfg cli.CLIConfig, serverURL, appURL, profile string, probe func(string) bool) (bool, error) {
 	if !probe(serverURL) {
 		return false, nil
 	}
-	cfg := cli.CLIConfig{
-		ServerURL: serverURL,
-		AppURL:    appURL,
-	}
+	cfg.ResetSettings()
+	cfg.ServerURL, cfg.AppURL = serverURL, appURL
 	if err := cli.SaveCLIConfigForProfile(cfg, profile); err != nil {
 		return false, err
 	}

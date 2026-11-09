@@ -136,16 +136,16 @@ The daemon runs its first cleanup about 30 seconds after starting, then every 2 
 
 ### Run directories
 
-Each run gets a directory under the workspaces root (default `~/multica_workspaces`) holding the checked-out code, output, and logs; later runs on the same issue reuse it. The whole directory is removed:
+Each run gets a directory under the workspaces root (default `~/multica_workspaces`) holding the checked-out code, output, and logs; later runs on the same issue reuse it. The directory becomes eligible for empty-root cleanup:
 
-| Run source | When it is removed |
+| Run source | When it becomes eligible |
 |---|---|
 | Issue | Once the issue is in a status of the `done` or `closed` category and has not been updated for 24 hours |
 | Chat | 24 hours after the session is archived; on the next cleanup after the session is deleted. Kept for as long as the session is not archived |
 | Autopilot (Run Only), quick create | On the next cleanup after the run ends |
-| No owner found (missing metadata, or the server no longer has the record) | After 72 hours without changes to the directory |
+| Orphan with a valid local task owner (missing completion metadata, or the server no longer has the record) | After 72 hours without changes to the directory |
 
-While the issue is still open, 12 hours after a run completes only regenerable content is removed: `node_modules`, `.next`, and `.turbo` directories, plus the cache the daemon prepares for Codex. Everything else stays. A daemon connected to Multica Cloud also removes the whole directory 14 days after the run completes, whether or not the issue is closed; self-hosted daemons do not do this by default.
+While the issue is still open, 12 hours after a run completes only regenerable content is removed: `node_modules`, `.next`, and `.turbo` directories, plus the cache the daemon prepares for Codex. Everything else stays. A daemon connected to Multica Cloud also makes a directory eligible for empty-root cleanup 14 days after the run completes, whether or not the issue is closed; self-hosted daemons do not do this by default. Eligibility never makes Git work or results disposable. Whole-root cleanup retains any checkout, output, logs, lock file, unknown entry or inspection error. Only verified empty scaffolding and understood ownership metadata can be removed. See [profile retention settings](/environment-variables#gc) for persistent configuration and rollback.
 
 A run on a project's local directory works in your own directory, which the daemon never touches. The record directory Multica creates for that run (logs and so on) is kept too; only regenerable caches inside it are cleaned.
 
