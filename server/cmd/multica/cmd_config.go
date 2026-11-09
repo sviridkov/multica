@@ -83,6 +83,7 @@ var configSetCmd = &cobra.Command{
 func init() {
 	configCmd.AddCommand(configShowCmd)
 	configCmd.AddCommand(configSetCmd)
+	configSetCmd.Flags().String("expect-revision", "", "Refuse if config.json no longer has this SHA256 (or missing)")
 }
 
 func runConfigShow(cmd *cobra.Command, _ []string) error {
@@ -132,6 +133,10 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	cfg, err := cli.LoadCLIConfigForProfile(profile)
 	if err != nil {
 		return err
+	}
+
+	if revision, _ := cmd.Flags().GetString("expect-revision"); revision != "" && cfg.Revision() != revision {
+		return cli.ErrCLIConfigConflict
 	}
 
 	if err := applyConfigSet(&cfg, key, value); err != nil {

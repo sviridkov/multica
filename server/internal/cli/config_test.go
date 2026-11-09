@@ -252,18 +252,8 @@ func TestCLIConfig_ProfileCommandOverrides_OmittedWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestCLIConfig_UnknownFieldsArePreserved verifies forward-compat: a future
-// daemon that adds, say, a `backends.codex` key should not have its data
-// destroyed when an older daemon (without knowledge of that key) reads and
-// re-saves the file. Today Go's encoding/json silently DROPS unknown fields
-// on round-trip. This test documents the gap so future maintainers know.
-//
-// Skipped today (encoding/json does not preserve unknown fields), but the
-// test is written so a future change to a preserve-unknown encoder
-// (json.RawMessage, mapstructure, etc.) will pick it up.
+// TestCLIConfig_UnknownFieldsArePreserved protects nested settings written by a newer CLI.
 func TestCLIConfig_UnknownFieldsArePreserved(t *testing.T) {
-	t.Skip("documenting known limitation: encoding/json drops unknown fields on round-trip; future PR can switch to a preserving encoder")
-
 	tmp := t.TempDir()
 	redirectTestHome(t, tmp)
 

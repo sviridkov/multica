@@ -83,7 +83,12 @@ func TestResolveDaemonWorkspacesRootPrecedence(t *testing.T) {
 		t.Fatalf("config root = %q, want %q", got, configRoot)
 	}
 
-	if err := cli.SaveCLIConfigForProfile(cli.CLIConfig{}, "dev"); err != nil {
+	cfg, err := cli.LoadCLIConfigForProfile("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WorkspacesRoot = ""
+	if err := cli.SaveCLIConfigForProfile(cfg, "dev"); err != nil {
 		t.Fatalf("clear profile config: %v", err)
 	}
 	got, err = resolveWorkspacesRootForProfile("dev", "")
