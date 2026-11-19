@@ -2768,6 +2768,10 @@ func (c *codexClient) request(ctx context.Context, method string, params any) (j
 		c.mu.Unlock()
 		return nil, fmt.Errorf("write %s: %w", method, err)
 	}
+	if c.cfg.Logger != nil && (method == "initialize" || isCodexThreadSetupRPC(method) || method == "turn/start") {
+		c.cfg.Logger.Info("codex rpc sent", "task_id", c.cfg.TaskID, "runtime_id", c.cfg.RuntimeID,
+			"pid", c.pid, "attempt", c.attempt, "method", method, "request_id", id)
+	}
 	if method == "turn/start" {
 		threadID := ""
 		if paramMap, ok := params.(map[string]any); ok {

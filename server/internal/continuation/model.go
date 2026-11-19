@@ -1,5 +1,6 @@
 // Package continuation detects an explicitly enrolled, unfinished remainder.
-// It never starts tasks or repeats external operations.
+// The monitor never starts tasks. The separately gated operator recovery path
+// can enqueue one proven-safe pre-start retry; external operations are read-only.
 package continuation
 
 import (

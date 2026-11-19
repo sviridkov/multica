@@ -54,7 +54,7 @@ func TestTaskPhaseRecorderLogsEachPhaseOnlyOnce(t *testing.T) {
 	if got, want := record["task_phase"], string(taskPhaseClaimed); got != want {
 		t.Fatalf("task_phase = %#v, want %#v", got, want)
 	}
-	for _, field := range []string{"phase_elapsed_ms", "total_elapsed_ms", "task_id", "runtime_id"} {
+	for _, field := range []string{"phase_elapsed_ms", "total_elapsed_ms", "task_id", "runtime_id", "phase_at", "daemon_pid", "host_cpu_count", "daemon_goroutines"} {
 		if _, ok := record[field]; !ok {
 			t.Fatalf("missing stable log field %q in %#v", field, record)
 		}

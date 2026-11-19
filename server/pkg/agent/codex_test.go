@@ -6493,3 +6493,33 @@ func TestCodexResumeOverflowError(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexRPCDiagnosticCorrelatesWithoutPayload(t *testing.T) {
+	c, fs, _ := newTestCodexClient(t)
+	var logs bytes.Buffer
+	c.cfg.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	c.cfg.TaskID = "task-fixture"
+	c.cfg.RuntimeID = "runtime-fixture"
+	c.pid = 123
+	c.attempt = 1
+	wait := drainRPCScript(t, c, fs, []rpcResponse{{method: "initialize", result: json.RawMessage(`{}`)}})
+	defer wait()
+	if _, err := c.request(context.Background(), "initialize", map[string]any{"credential": "opaque-fixture-secret", "payload": "private-prompt"}); err != nil {
+		t.Fatal(err)
+	}
+	text := logs.String()
+	for _, secret := range []string{"opaque-fixture-secret", "private-prompt", "credential", "payload"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("RPC diagnostic includes %s", secret)
+		}
+	}
+	var event map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &event); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"time", "task_id", "runtime_id", "pid", "attempt", "method", "request_id"} {
+		if _, ok := event[key]; !ok {
+			t.Fatalf("missing correlation %s", key)
+		}
+	}
+}
