@@ -54,6 +54,11 @@ transaction. Failure before commit leaves no child; lost ACK after commit is
 handled by repeating the same request and reading the existing receipt. It
 does not require fresh admission to *read* that receipt. A receipt is never a
 new dispatch authorization. Generations cannot reset budget for the same root.
+After an explicit new detector generation, callers must first read the current
+contract and supply its generation. The original task still returns its first
+receipt, with the original receipt generation and retry task ID; reading it
+does not replace the new receiver or amend either history. Stale generations
+conflict, and a new enqueue still requires the current contract version.
 
 The child starts a fresh provider session, preserves the existing workdir and
 attribution, and sets `max_attempts=1`. That disables the existing service's

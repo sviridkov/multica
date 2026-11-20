@@ -140,7 +140,10 @@ func (m *Monitor) RecoverPreStart(ctx context.Context, req RecoveryRequest) (Rec
 	}
 	var receipt RecoveryReceipt
 	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT receipt FROM issue_continuation_recovery WHERE workspace_id=$1 AND original_task_id=$2 AND generation=$3 AND issue_id=$4 AND chain_id=$5 AND remainder_id=$6`, req.WorkspaceID, req.OriginalTaskID, req.Generation, req.IssueID, req.ChainID, req.RemainderID).Scan(&raw)
+	// An explicit detector rearm does not replenish the original task's retry
+	// budget. With the current scope/generation verified, read its first receipt
+	// without adopting the old retry into the new generation or rewriting history.
+	err = tx.QueryRow(ctx, `SELECT receipt FROM issue_continuation_recovery WHERE workspace_id=$1 AND original_task_id=$2 AND generation<=$3 AND issue_id=$4 AND chain_id=$5 AND remainder_id=$6 ORDER BY generation LIMIT 1`, req.WorkspaceID, req.OriginalTaskID, req.Generation, req.IssueID, req.ChainID, req.RemainderID).Scan(&raw)
 	if err == nil {
 		if err = json.Unmarshal(raw, &receipt); err != nil {
 			return receipt, err

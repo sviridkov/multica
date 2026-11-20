@@ -189,3 +189,117 @@ func TestRecoveryExternalHoldAndPrivateDeletion(t *testing.T) {
 		}
 	}
 }
+
+func TestStagedWorkspaceDeletionRemovesRecoveryOnlyInTarget(t *testing.T) {
+	f, _, c, _, _ := fixture(t)
+	neighbor, _, other, _, _ := fixture(t)
+	for _, seed := range []struct {
+		f *testutil.Fixture
+		c Contract
+	}{{f, c}, {neighbor, other}} {
+		seed.f.InsertNoID(t, "issue_continuation_recovery", testutil.Cols{
+			"workspace_id": seed.c.WorkspaceID, "issue_id": seed.c.IssueID,
+			"chain_id": seed.c.ChainID, "remainder_id": seed.c.RemainderID,
+			"original_task_id": seed.c.ReceiverTaskID, "generation": 1,
+			"receipt": "{}", "admission": "{}",
+		}, "issue_id=$1", seed.c.IssueID)
+		seed.f.InsertNoID(t, "issue_continuation_operation", testutil.Cols{
+			"workspace_id": seed.c.WorkspaceID, "issue_id": seed.c.IssueID,
+			"operation_key": "fixture", "version": 1, "record": "{}",
+		}, "issue_id=$1", seed.c.IssueID)
+	}
+	ctx := context.Background()
+	tx, err := f.Pool.Begin(ctx)
+	must(t, err)
+	defer tx.Rollback(ctx)
+	_, err = tx.Exec(ctx, "SELECT id FROM workspace WHERE id=$1 FOR UPDATE", c.WorkspaceID)
+	must(t, err)
+	var workspace pgtype.UUID
+	must(t, workspace.Scan(c.WorkspaceID))
+	must(t, db.New(tx).DeleteWorkspaceIssueRoots(ctx, workspace))
+	must(t, tx.Commit(ctx))
+	for _, table := range []string{"issue", "issue_continuation_recovery", "issue_continuation_operation"} {
+		if got := f.Count(t, "SELECT count(*) FROM "+table+" WHERE workspace_id=$1", c.WorkspaceID); got != 0 {
+			t.Errorf("staged deletion retained %d %s rows", got, table)
+		}
+		if got := neighbor.Count(t, "SELECT count(*) FROM "+table+" WHERE workspace_id=$1", other.WorkspaceID); got != 1 {
+			t.Errorf("staged deletion changed neighbor %s rows: %d", table, got)
+		}
+	}
+}
+
+func TestRecoveryStaleGenerationAndCASCannotEnqueue(t *testing.T) {
+	f, m, req, _, _ := recoveryFixture(t)
+	ctx := context.Background()
+	before := current(t, m, req.Key)
+	before.Evidence = "Updated operator handoff"
+	before = put(t, m, before.Contract, before.Version)
+	for _, stale := range []RecoveryRequest{
+		req,
+		{Key: req.Key, Generation: req.Generation + 1, ExpectedVersion: before.Version, OwnerID: req.OwnerID, OriginalTaskID: req.OriginalTaskID},
+	} {
+		if _, err := m.RecoverPreStart(ctx, stale); !errors.Is(err, ErrConflict) {
+			t.Fatalf("stale generation/version did not conflict: %v", err)
+		}
+	}
+	if got := f.Count(t, "SELECT count(*) FROM agent_task_queue WHERE retry_of_task_id=$1", req.OriginalTaskID); got != 0 {
+		t.Fatal("stale request consumed retry budget")
+	}
+	if got := f.Count(t, "SELECT count(*) FROM issue_continuation_recovery WHERE original_task_id=$1", req.OriginalTaskID); got != 0 {
+		t.Fatal("stale request persisted a receipt")
+	}
+	if after := current(t, m, req.Key); after.Version != before.Version || after.ReceiverTaskID != before.ReceiverTaskID {
+		t.Fatal("stale request changed the contract")
+	}
+	req.ExpectedVersion = before.Version
+	_, err := m.RecoverPreStart(ctx, req)
+	must(t, err)
+}
+
+func TestRecoveryReceiptAndBudgetSurviveNewGeneration(t *testing.T) {
+	f, m, req, agent, runtime := recoveryFixture(t)
+	ctx := context.Background()
+	receipt, err := m.RecoverPreStart(ctx, req)
+	must(t, err)
+	f.Exec(t, "UPDATE agent_task_queue SET status='failed',completed_at=now() WHERE id=$1", receipt.RetryTaskID)
+	m.Notify = true
+	must(t, m.Deliver(ctx, req.Key))
+	before := current(t, m, req.Key)
+	incident := incidentSnapshot(t, f, before.Contract)
+	var saved string
+	f.QueryRow(t, "SELECT row_to_json(r)::text FROM issue_continuation_recovery r WHERE original_task_id=$1", req.OriginalTaskID).Scan(&saved)
+	// Accepted1769 permits an explicit new live receiver after delivery. That
+	// changes the detector generation, not the original task's retry budget.
+	next := before.Contract
+	next.Generation++
+	next.ReceiverTaskID = f.Task(t, agent, testutil.Cols{"issue_id": req.IssueID, "runtime_id": runtime})
+	after, err := m.Put(ctx, Change{Contract: next, ExpectedVersion: before.Version, NewGeneration: true})
+	must(t, err)
+	if _, err = m.RecoverPreStart(ctx, req); !errors.Is(err, ErrConflict) {
+		t.Fatalf("old generation did not conflict: %v", err)
+	}
+	req.Generation, req.ExpectedVersion = after.Generation, after.Version
+	req.Admission.ObservedAt = time.Time{} // Receipt reads do not dispatch.
+	restarted := &Monitor{Pool: m.Pool, ProjectID: m.ProjectID}
+	for range 2 {
+		got, err := restarted.RecoverPreStart(ctx, req)
+		must(t, err)
+		if got.OriginalTaskID != req.OriginalTaskID || got.RetryTaskID != receipt.RetryTaskID || got.Generation != receipt.Generation || got.OwnerID != receipt.OwnerID || got.State != "blocked_retry_exhausted" || !got.CreatedAt.Equal(receipt.CreatedAt) {
+			t.Fatalf("lost original receipt across generation: %+v", got)
+		}
+	}
+	if got := f.Count(t, "SELECT count(*) FROM agent_task_queue WHERE retry_of_task_id=$1", req.OriginalTaskID); got != 1 {
+		t.Fatal("generation reset retry budget")
+	}
+	if got := f.Count(t, "SELECT count(*) FROM issue_continuation_recovery WHERE original_task_id=$1", req.OriginalTaskID); got != 1 {
+		t.Fatal("generation created another recovery receipt")
+	}
+	var stored string
+	f.QueryRow(t, "SELECT row_to_json(r)::text FROM issue_continuation_recovery r WHERE original_task_id=$1", req.OriginalTaskID).Scan(&stored)
+	if stored != saved || incidentSnapshot(t, f, before.Contract) != incident {
+		t.Fatal("receipt read changed the recovery or delivered incident history")
+	}
+	if current := current(t, m, req.Key); current.Version != after.Version || current.Generation != after.Generation || current.ReceiverTaskID != next.ReceiverTaskID {
+		t.Fatal("receipt read adopted the old retry into the new generation")
+	}
+}
