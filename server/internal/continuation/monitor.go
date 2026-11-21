@@ -385,15 +385,24 @@ func (m *Monitor) reconcile(ctx context.Context, tx pgx.Tx, r *Record) (facts, s
 		return f, "", err
 	}
 	state, reason := decide(r.Contract, f, now)
+	if state == "needs_reconcile" {
+		exhausted, err := recoveryExhausted(ctx, tx, r, f)
+		if err != nil {
+			return f, "", err
+		}
+		if exhausted {
+			reason = "retry_exhausted"
+		}
+	}
 	progress := (previousReceiver != r.ReceiverTaskID || previousState != state) && state != "needs_reconcile"
 	raw, err := json.Marshal(r.Contract)
 	if err != nil {
 		return f, "", err
 	}
-	args := append(keyArgs(r.Key), state, raw, progress)
+	args := append(keyArgs(r.Key), state, raw, progress, r.Generation)
 	// Reading unchanged facts is not progress and does not invalidate an
 	// operator's CAS. Adopted receivers/state changes do invalidate it.
-	_, err = tx.Exec(ctx, `UPDATE issue_continuation SET version=version+CASE WHEN state<>$5 OR contract<>$6::jsonb THEN 1 ELSE 0 END,state=$5,contract=$6,last_progress_at=CASE WHEN $7 THEN now() ELSE last_progress_at END,next_check_at=now()+interval '30 seconds' WHERE `+keyWhere, args...)
+	_, err = tx.Exec(ctx, `UPDATE issue_continuation SET history=CASE WHEN generation<>$8 THEN history||jsonb_build_array(jsonb_build_object('contract',contract,'version',version,'state',state,'at',now())) ELSE history END,generation=$8,version=version+CASE WHEN state<>$5 OR contract<>$6::jsonb THEN 1 ELSE 0 END,state=$5,contract=$6,last_progress_at=CASE WHEN $7 THEN now() ELSE last_progress_at END,next_check_at=now()+interval '30 seconds' WHERE `+keyWhere, args...)
 	if err != nil {
 		return f, "", err
 	}

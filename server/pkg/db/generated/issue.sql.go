@@ -471,6 +471,12 @@ const deleteIssue = `-- name: DeleteIssue :exec
 WITH target AS (
     SELECT issue.id FROM issue WHERE issue.id = $1 AND issue.workspace_id = $2 FOR UPDATE
 ),
+cleared_continuation_recoveries AS (
+ DELETE FROM issue_continuation_recovery WHERE workspace_id=$2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_continuation_operations AS (
+ DELETE FROM issue_continuation_operation WHERE workspace_id=$2 AND issue_id IN (SELECT target.id FROM target)
+),
 cleared_continuation_incidents AS (
  DELETE FROM issue_continuation_incident WHERE workspace_id=$2 AND issue_id IN (SELECT target.id FROM target)
 ),

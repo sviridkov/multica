@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY idx_continuation_recovery_key ON issue_continuation_recovery(workspace_id, original_task_id, generation);

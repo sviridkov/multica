@@ -1126,6 +1126,25 @@ type IssueContinuationIncident struct {
 	LastDeliveryError pgtype.Text        `json:"last_delivery_error"`
 }
 
+type IssueContinuationOperation struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	OperationKey string      `json:"operation_key"`
+	Version      int64       `json:"version"`
+	Record       []byte      `json:"record"`
+}
+
+type IssueContinuationRecovery struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+	ChainID        pgtype.UUID `json:"chain_id"`
+	RemainderID    pgtype.UUID `json:"remainder_id"`
+	OriginalTaskID pgtype.UUID `json:"original_task_id"`
+	Generation     int64       `json:"generation"`
+	Receipt        []byte      `json:"receipt"`
+	Admission      []byte      `json:"admission"`
+}
+
 type IssueDependency struct {
 	ID               pgtype.UUID `json:"id"`
 	IssueID          pgtype.UUID `json:"issue_id"`

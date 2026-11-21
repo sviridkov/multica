@@ -256,7 +256,11 @@ func (q *Queries) DeleteWorkspaceEntitlementLimitOverages(ctx context.Context, w
 }
 
 const deleteWorkspaceIssueRoots = `-- name: DeleteWorkspaceIssueRoots :exec
-WITH deleted_continuation_incidents AS (
+WITH deleted_continuation_recoveries AS (
+ DELETE FROM issue_continuation_recovery WHERE workspace_id=$1
+), deleted_continuation_operations AS (
+ DELETE FROM issue_continuation_operation WHERE workspace_id=$1
+), deleted_continuation_incidents AS (
  DELETE FROM issue_continuation_incident WHERE workspace_id=$1
 ), deleted_continuations AS (
  DELETE FROM issue_continuation WHERE workspace_id=$1

@@ -1,5 +1,6 @@
 // Package continuation detects an explicitly enrolled, unfinished remainder.
-// It never starts tasks or repeats external operations.
+// The monitor never starts tasks. The separately gated operator recovery path
+// can enqueue one proven-safe pre-start retry; external operations are read-only.
 package continuation
 
 import (
@@ -21,7 +22,8 @@ type Key struct {
 
 // Contract is an operator-attested handoff, not an inference from issue status
 // or free-form model output. Automatic receiver adoption keeps the generation;
-// an operator can explicitly rearm a delivered incident for a new live receiver.
+// exhausted controlled recovery can advance it to preserve a delivered incident.
+// An operator can also explicitly rearm for a new live receiver.
 type Contract struct {
 	Key
 	Generation        int64      `json:"generation"`

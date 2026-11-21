@@ -603,7 +603,11 @@ DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1;
 DELETE FROM comment WHERE comment.workspace_id = $1;
 
 -- name: DeleteWorkspaceIssueRoots :exec
-WITH deleted_continuation_incidents AS (
+WITH deleted_continuation_recoveries AS (
+ DELETE FROM issue_continuation_recovery WHERE workspace_id=$1
+), deleted_continuation_operations AS (
+ DELETE FROM issue_continuation_operation WHERE workspace_id=$1
+), deleted_continuation_incidents AS (
  DELETE FROM issue_continuation_incident WHERE workspace_id=$1
 ), deleted_continuations AS (
  DELETE FROM issue_continuation WHERE workspace_id=$1

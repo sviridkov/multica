@@ -194,3 +194,10 @@ go test -timeout 90s ./cmd/migrate ./internal/migrations
 These tests do not assert production deployment or human receipt. The later
 recovery implementation must separately prove execution safety and admission;
 this detector provides no permission or API for automatic retries.
+
+## Separate controlled recovery
+
+The detector contract and scheduler are unchanged. The separately gated
+operator tool and read-only external reconciliation are described in
+[RECOVERY.md](RECOVERY.md). Recovery defaults OFF and has its own admission,
+durable receipt and independent review requirements.

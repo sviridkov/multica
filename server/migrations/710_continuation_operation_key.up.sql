@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY idx_continuation_operation_key ON issue_continuation_operation(workspace_id, operation_key);

@@ -65,6 +65,12 @@ ws_agents AS (
 ws_skills AS (
     SELECT id FROM skill WHERE workspace_id = $1
 ),
+cleared_continuation_recoveries AS (
+ DELETE FROM issue_continuation_recovery WHERE workspace_id=$1
+),
+cleared_continuation_operations AS (
+ DELETE FROM issue_continuation_operation WHERE workspace_id=$1
+),
 cleared_continuation_incidents AS (
  DELETE FROM issue_continuation_incident WHERE workspace_id=$1
 ),

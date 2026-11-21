@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"log/slog"
+	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -82,6 +84,10 @@ func (r *taskPhaseRecorder) Mark(phase taskPhase) taskPhaseSample {
 	if r.logger != nil {
 		r.logger.Info("task phase recorded",
 			"task_phase", phase,
+			"phase_at", now.UTC().Format(time.RFC3339Nano),
+			"daemon_pid", os.Getpid(),
+			"host_cpu_count", runtime.NumCPU(),
+			"daemon_goroutines", runtime.NumGoroutine(),
 			"phase_elapsed_ms", sample.PhaseElapsed.Milliseconds(),
 			"total_elapsed_ms", sample.TotalElapsed.Milliseconds(),
 		)
