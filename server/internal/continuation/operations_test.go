@@ -21,7 +21,7 @@ func TestOperationSafetyMatrix(t *testing.T) {
 	deploy := Operation{Kind: "deploy", Environment: "pilot", ReleaseDigest: fixtureDigest, ImageDigest: fixtureDigest, ConfigRevision: "rev7"}
 	call := Operation{Kind: "call", DemoSession: "demo7", Attempt: "attempt1", Provider: "retell", ProviderOperationID: "call_7"}
 	m := Observation{Known: true, ObservedAt: now, Head: fixtureHead, Base: fixtureBase, Merged: true, MergeCommit: fixtureCommit}
-	d := Observation{Known: true, ObservedAt: now, ReleaseDigest: fixtureDigest, ImageDigest: fixtureDigest, ConfigRevision: "rev7", BootstrapReceipt: "bootstrap7", MigrationReceipt: "migrate7", DeployReceipt: "deploy7", Healthy: true}
+	d := Observation{Known: true, ObservedAt: now, Environment: "pilot", ReleaseDigest: fixtureDigest, ImageDigest: fixtureDigest, ConfigRevision: "rev7", BootstrapReceipt: "bootstrap7", MigrationReceipt: "migrate7", DeployReceipt: "deploy7", Healthy: true}
 	c := Observation{Known: true, ObservedAt: now, ProviderOperationID: "call_7", ProviderStatus: "completed"}
 	cases := []struct {
 		name        string

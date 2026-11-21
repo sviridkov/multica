@@ -72,6 +72,7 @@ type Observation struct {
 	Merged              bool      `json:"merged,omitempty"`
 	MergeCommit         string    `json:"merge_commit,omitempty"`
 	Open                bool      `json:"open,omitempty"`
+	Environment         string    `json:"environment,omitempty"`
 	ReleaseDigest       string    `json:"release_digest,omitempty"`
 	ImageDigest         string    `json:"image_digest,omitempty"`
 	ConfigRevision      string    `json:"config_revision,omitempty"`
@@ -108,6 +109,9 @@ func decideOperation(o Operation, s Observation, now time.Time) OperationDecisio
 			return OperationDecision{"ready", "revalidate_before_merge"}
 		}
 	case "deploy":
+		if !refPattern.MatchString(s.Environment) || s.Environment != o.Environment {
+			return hold
+		}
 		if s.ReleaseDigest != o.ReleaseDigest || s.ImageDigest != o.ImageDigest || s.ConfigRevision != o.ConfigRevision {
 			return OperationDecision{"needs_decision", "review_changed_deployment"}
 		}
@@ -272,7 +276,7 @@ func (s Observation) safe() bool {
 			return false
 		}
 	}
-	for _, v := range []string{s.ConfigRevision, s.BootstrapReceipt, s.MigrationReceipt, s.DeployReceipt, s.ProviderOperationID} {
+	for _, v := range []string{s.Environment, s.ConfigRevision, s.BootstrapReceipt, s.MigrationReceipt, s.DeployReceipt, s.ProviderOperationID} {
 		if v != "" && !refPattern.MatchString(v) {
 			return false
 		}

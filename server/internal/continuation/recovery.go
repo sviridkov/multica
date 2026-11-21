@@ -113,19 +113,23 @@ func (m *Monitor) RecoverPreStart(ctx context.Context, req RecoveryRequest) (Rec
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(tx)
+	// Match workspace teardown and lock_task_owner_rows: workspace, agent,
+	// then issue. An agent lock before the workspace fence deadlocks deletion.
+	var locked string
+	if err = tx.QueryRow(ctx, "SELECT id::text FROM workspace WHERE id=$1 FOR KEY SHARE", req.WorkspaceID).Scan(&locked); err != nil {
+		return RecoveryReceipt{}, err
+	}
 	var original pgtype.UUID
 	_ = original.Scan(req.OriginalTaskID)
 	parent, err := q.GetAgentTask(ctx, original)
 	if err != nil {
 		return RecoveryReceipt{}, err
 	}
-	// Agent first, then workspace/issue/ledger, matching enqueue lock order.
 	// FOR UPDATE serializes even ordinary enqueues (which take KEY SHARE).
-	var locked string
 	if err = tx.QueryRow(ctx, "SELECT id::text FROM agent WHERE id=$1 AND workspace_id=$2 FOR UPDATE", parent.AgentID, req.WorkspaceID).Scan(&locked); err != nil {
 		return RecoveryReceipt{}, err
 	}
-	if err = m.lockIssue(ctx, tx, req.Key); err != nil {
+	if err = tx.QueryRow(ctx, "SELECT id::text FROM issue WHERE id=$1 AND workspace_id=$2 FOR UPDATE", req.IssueID, req.WorkspaceID).Scan(&locked); err != nil {
 		return RecoveryReceipt{}, err
 	}
 	c, err := load(ctx, tx, req.Key)
@@ -209,11 +213,28 @@ func (m *Monitor) RecoverPreStart(ctx context.Context, req RecoveryRequest) (Rec
 	// No task-owned source-context transfer or connected-app credentials can be
 	// reconstructed here. Such cases stay with the existing service path.
 	var unsupported bool
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(context ? 'source_context_id',false) OR EXISTS(SELECT 1 FROM channel_task_delivery WHERE task_id=$1) FROM agent_task_queue WHERE id=$1`, original).Scan(&unsupported); err != nil {
+	var wakeupID, wakeupRevision *string
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(context ? 'source_context_id',false) OR EXISTS(SELECT 1 FROM channel_task_delivery WHERE task_id=$1),context->>'wakeup_id',context->>'wakeup_revision' FROM agent_task_queue WHERE id=$1`, original).Scan(&unsupported, &wakeupID, &wakeupRevision); err != nil {
 		return receipt, err
 	}
 	if unsupported {
 		return receipt, errors.New("hold: channel/source-context task requires its service recovery path")
+	}
+	if wakeupID != nil {
+		id, parseErr := uuid.Parse(*wakeupID)
+		if parseErr != nil {
+			return receipt, errors.New("hold: invalid task wakeup context")
+		}
+		// CreateRetryTask carries this context into the child. Use the claim
+		// fence (not enabled: a consumed once rule is valid) and lock it until
+		// enqueue commits. A direct receiver contract cannot bypass this input.
+		err = tx.QueryRow(ctx, `SELECT id::text FROM issue_wakeup WHERE id=$1 AND workspace_id=$2 AND issue_id=$3 AND disabled_at IS NULL AND revision::text=$4 FOR SHARE`, id.String(), req.WorkspaceID, req.IssueID, wakeupRevision).Scan(&locked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return receipt, errors.New("hold: task wakeup is disabled, deleted or revised")
+		}
+		if err != nil {
+			return receipt, err
+		}
 	}
 	child, err := q.CreateRetryTask(ctx, db.CreateRetryTaskParams{ID: original, NewTaskID: dbid.NewV7(), MaxAttempts: pgtype.Int4{Int32: 1, Valid: true}})
 	if err != nil {
@@ -251,4 +272,32 @@ func (m *Monitor) RecoverPreStart(ctx context.Context, req RecoveryRequest) (Rec
 		return receipt, err
 	}
 	return receipt, tx.Commit(ctx)
+}
+
+// A delivered failure cannot be reopened. Give the exhausted controlled retry
+// its own signal generation, while its original receipt and budget stay put.
+// The caller holds the ledger lock and persists the increment with its history
+// and outbox in the same transaction. Subsequent deliveries cannot increment it.
+func recoveryExhausted(ctx context.Context, tx pgx.Tx, r *Record, f facts) (bool, error) {
+	if f.status != "failed" && f.status != "cancelled" {
+		return false, nil
+	}
+	var generation int64
+	err := tx.QueryRow(ctx, `SELECT generation FROM issue_continuation_recovery WHERE `+keyWhere+` AND receipt->>'retry_task_id'=$5 AND generation<=$6 ORDER BY generation LIMIT 1`, append(keyArgs(r.Key), r.ReceiverTaskID, r.Generation)...).Scan(&generation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if generation == r.Generation {
+		var delivered bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM issue_continuation_incident WHERE `+keyWhere+` AND generation=$5 AND outbox_state='delivered')`, append(keyArgs(r.Key), r.Generation)...).Scan(&delivered); err != nil {
+			return false, err
+		}
+		if delivered {
+			r.Generation++
+		}
+	}
+	return true, nil
 }

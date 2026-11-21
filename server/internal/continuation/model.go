@@ -22,7 +22,8 @@ type Key struct {
 
 // Contract is an operator-attested handoff, not an inference from issue status
 // or free-form model output. Automatic receiver adoption keeps the generation;
-// an operator can explicitly rearm a delivered incident for a new live receiver.
+// exhausted controlled recovery can advance it to preserve a delivered incident.
+// An operator can also explicitly rearm for a new live receiver.
 type Contract struct {
 	Key
 	Generation        int64      `json:"generation"`

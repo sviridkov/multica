@@ -54,7 +54,7 @@ transaction. Failure before commit leaves no child; lost ACK after commit is
 handled by repeating the same request and reading the existing receipt. It
 does not require fresh admission to *read* that receipt. A receipt is never a
 new dispatch authorization. Generations cannot reset budget for the same root.
-After an explicit new detector generation, callers must first read the current
+After a new detector generation, callers must first read the current
 contract and supply its generation. The original task still returns its first
 receipt, with the original receipt generation and retry task ID; reading it
 does not replace the new receiver or amend either history. Stale generations
@@ -64,10 +64,24 @@ The child starts a fresh provider session, preserves the existing workdir and
 attribution, and sets `max_attempts=1`. That disables the existing service's
 reason-specific automatic retry ceilings too. If this child fails/cancels,
 the same request returns `blocked_retry_exhausted` with the single contract
-owner. The detector sees the adopted failed receiver and uses its existing
-one-incident private signal. A completed retry returns `awaiting_coverage`;
+owner. The detector delivers `retry_exhausted` for the adopted failed/cancelled
+retry. If this generation already delivered the original failure, reconciliation
+advances its signal generation once and appends the prior contract to history;
+the first incident and recovery receipt remain unchanged. Generation, history
+and the new incident commit together; inbox delivery commits with its outbox ACK.
+Restart or repeated terminal
+delivery cannot create another exhaustion signal or refill the original-task
+budget. A completed retry returns `awaiting_coverage`;
 only the existing explicit result/coverage contract can resolve the remainder.
 These are distinct receipts, not an exactly-once execution claim.
+
+Recovery locks workspace (KEY SHARE), agent (UPDATE, in that workspace), then
+issue (UPDATE), matching workspace deletion's fence. Task wakeup context is
+also checked and held through enqueue: a deleted, explicitly disabled, revised
+or malformed wakeup holds before spending the retry budget, even with a direct
+receiver contract. A consumed once rule with the current revision and no
+`disabled_at` remains eligible. The normal claim fence is unchanged; a later
+wakeup invalidation still controls the child through the ordinary service path.
 
 Build from `server/`:
 
@@ -110,13 +124,18 @@ continuation-recovery -operation reconcile -input deploy.json -snapshot verified
 | Operation key | Required external proof | Result on uncertainty |
 | --- | --- | --- |
 | repository + PR + expected head/base commit | GitHub PR read; on merged, commit read and first-parent base verification | Hold; changed head/base requires a new decision |
-| environment + release/image SHA256 digests + config revision | Actual immutable refs, bootstrap/migration/deploy receipts, health observation | Never repeat bootstrap or migrations; verify only health when receipts exist |
+| environment + release/image SHA256 digests + config revision | Exact environment, immutable refs, bootstrap/migration/deploy receipts, health observation | Never repeat bootstrap or migrations; verify only health when receipts exist |
 | call: demo session + explicit attempt | Retell [GET /v2/get-call/{call_id}](https://docs.retellai.com/api-references/get-call) with exact returned call ID | No ID, timeout or unsupported state: hold; **no auto-redial** |
 | SMS: demo session + explicit attempt | Verified operator snapshot of the separate SMS provider operation ID/status | Hold; no automatic resend |
 
 GitHub uses `GITHUB_TOKEN`, Retell uses `RETELL_API_KEY`, only from existing
 server provisioning. HTTP adapters issue GET to fixed hosts, deny redirects,
 bound responses, and exclude response bodies/errors/headers from storage.
+Deploy snapshots require `environment` in the same identifier format as the
+operation, matching it exactly. An absent, malformed or different environment
+holds even if all digests, receipts and health checks match. This scope check
+does not independently authenticate the operator's observation.
+
 The deployment/SMS snapshot is a typed operator attestation from a real
 read-side check; it is not a claim that a universal deployment/SMS adapter
 exists. Snapshot observations must be fresh. A `ready` decision identifies a
